@@ -1,0 +1,26 @@
+# Existing folders to keep out of version control
+projects/
+proposal/
+
+# macOS
+.DS_Store
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE/editor
+.vscode/
+.idea/
