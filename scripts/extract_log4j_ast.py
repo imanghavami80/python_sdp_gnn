@@ -9,6 +9,7 @@ Outputs (default: outputs/log4j/ast):
 - node_type_vocab.json                  : stable exact AST node type -> id mapping
 - graph_index.csv                       : graph-level summary and paths
 - ast_summary.json                      : global statistics
+- parse_fallbacks.json                  : strict parser failures recovered by fallback
 - ast_report.md                         : concise implementation report + sample Mermaid views
 """
 
@@ -235,7 +236,12 @@ def extract_fallback_structure(code: str) -> Tuple[List[KeptNode], List[Tuple[in
         class_match = re.search(r"\b(class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", line)
         if class_match:
             kind = class_match.group(1)
-            node_type = "ClassDeclaration" if kind == "class" else "InterfaceDeclaration"
+            if kind == "class":
+                node_type = "ClassDeclaration"
+            elif kind == "interface":
+                node_type = "InterfaceDeclaration"
+            else:
+                node_type = "EnumDeclaration"
             class_node = add(node_type, depth=depth, parent_id=parent, hint=class_match.group(2))
             class_stack.append((class_node, brace_depth + raw_line.count("{")))
             current_method = None
@@ -300,6 +306,7 @@ def main() -> None:
     total_nodes = 0
     total_edges = 0
     parse_failures: List[Dict[str, str]] = []
+    parse_fallbacks: List[Dict[str, str]] = []
     type_counter: Dict[str, int] = {}
 
     for _, row in mapped.iterrows():
@@ -312,9 +319,16 @@ def main() -> None:
             try:
                 tree = javalang.parse.parse(code)
                 nodes, edges = extract_filtered_tree(tree)
-            except Exception:
+            except Exception as strict_exc:
                 parser_mode = "fallback"
                 nodes, edges = extract_fallback_structure(code)
+                parse_fallbacks.append(
+                    {
+                        "name": name,
+                        "source_path": str(source_path),
+                        "strict_parser_error": str(strict_exc),
+                    }
+                )
             x, node_type_ids = build_feature_matrix(nodes, edges)
             edge_index = np.array(edges, dtype=np.int64).T if edges else np.zeros((2, 0), dtype=np.int64)
 
@@ -388,6 +402,7 @@ def main() -> None:
         "model_node_feature_dim": MODEL_NODE_FEATURE_DIM,
         "node_type_vocab_size": len(NODE_TYPE_TO_ID),
         "fallback_graphs": int(sum(1 for r in graph_rows if r.get("parser_mode") == "fallback")),
+        "strict_parse_fallbacks": int(len(parse_fallbacks)),
         "important_node_types": sorted(IMPORTANT_NODE_TYPES),
         "top_node_types": top_types,
     }
@@ -396,6 +411,8 @@ def main() -> None:
 
     failures_path = out_dir / "parse_failures.json"
     failures_path.write_text(json.dumps(parse_failures, indent=2))
+    fallbacks_path = out_dir / "parse_fallbacks.json"
+    fallbacks_path.write_text(json.dumps(parse_fallbacks, indent=2))
 
     report_lines: List[str] = []
     report_lines.append("# AST Extraction Report for Log4j 1.0")
@@ -420,7 +437,7 @@ def main() -> None:
     report_lines.append("- Only important AST node types are kept to reduce noise and graph size.")
     report_lines.append("- Removed intermediate nodes are bypassed by reconnecting each kept node to the nearest kept ancestor.")
     report_lines.append("- Parent-child AST relations are saved as directed edges from parent node to child node.")
-    report_lines.append("- Four legacy Java files required the deterministic fallback parser and are marked with `parser_mode=fallback`.")
+    report_lines.append("- If strict parsing fails, a deterministic fallback parser is used and the graph is marked with `parser_mode=fallback`.")
     report_lines.append("")
     report_lines.append("## 4. Selected AST Node Types")
     report_lines.append(
@@ -546,7 +563,8 @@ def main() -> None:
     report_lines.append("- `outputs/log4j/ast/tensors/*_edge_index.npy`: edge index tensors.")
     report_lines.append("- `outputs/log4j/ast/node_type_vocab.json`: stable mapping from exact AST node type to id.")
     report_lines.append("- `outputs/log4j/ast/ast_summary.json`: global extraction statistics.")
-    report_lines.append("- `outputs/log4j/ast/parse_failures.json`: parse failure log; currently empty.")
+    report_lines.append("- `outputs/log4j/ast/parse_failures.json`: hard failures where both strict and fallback parsing failed.")
+    report_lines.append("- `outputs/log4j/ast/parse_fallbacks.json`: files where strict parsing failed but fallback extraction succeeded.")
     report_lines.append("")
     report_lines.append("## 8. Results")
     report_lines.append("")
@@ -556,6 +574,7 @@ def main() -> None:
     report_lines.append(f"| Graphs generated | {summary['graphs_generated']} |")
     report_lines.append(f"| Parse failures | {summary['parse_failures']} |")
     report_lines.append(f"| Fallback graphs | {summary['fallback_graphs']} |")
+    report_lines.append(f"| Strict parser failures recovered by fallback | {summary['strict_parse_fallbacks']} |")
     report_lines.append(f"| Total nodes | {summary['total_nodes']} |")
     report_lines.append(f"| Total edges | {summary['total_edges']} |")
     report_lines.append(f"| Average nodes per graph | {summary['avg_nodes_per_graph']:.2f} |")
