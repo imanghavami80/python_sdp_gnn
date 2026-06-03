@@ -4,9 +4,10 @@
 This script:
 1. Loads the PROMISE CSV and validates expected structure.
 2. Handles missing numeric values (median imputation).
-3. Scales numeric features (excluding the supervised label `bug`).
-4. Maps each class `name` to a Java source file path in local Log4j sources.
-5. Writes preprocessed data and mapping artifacts to disk.
+3. Applies log1p transformation to metric features to reduce skew.
+4. Scales numeric features (excluding the supervised label `bug`).
+5. Maps each class `name` to a Java source file path in local Log4j sources.
+6. Writes preprocessed data and mapping artifacts to disk.
 """
 
 from __future__ import annotations
@@ -107,8 +108,8 @@ def preprocess_log4j(
 
     df = df[EXPECTED_COLUMNS].copy()
 
-    # Ensure `bug` is the supervised label (integer 0/1).
-    df["bug"] = pd.to_numeric(df["bug"], errors="coerce").fillna(0).astype(int)
+    # Convert PROMISE defect counts to the binary classification target.
+    df["bug"] = (pd.to_numeric(df["bug"], errors="coerce").fillna(0) > 0).astype(int)
 
     # Numeric feature columns exclude identifier + label.
     feature_cols = [c for c in df.columns if c not in ("name", "bug")]
@@ -118,6 +119,12 @@ def preprocess_log4j(
         df[col] = pd.to_numeric(df[col], errors="coerce")
         if df[col].isna().any():
             df[col] = df[col].fillna(df[col].median())
+
+    if (df[feature_cols] < 0).any().any():
+        raise ValueError("log1p transformation requires non-negative metric features")
+
+    # Reduce skew in count-like software metrics before scaling.
+    df[feature_cols] = np.log1p(df[feature_cols])
 
     if scaler_name == "standard":
         scaler = StandardScaler()
@@ -162,12 +169,15 @@ def preprocess_log4j(
     matched = int(mapping_df["source_path"].notna().sum())
     total = int(len(mapping_df))
     strategy_counts = mapping_df["match_strategy"].value_counts(dropna=False).to_dict()
+    bug_label_counts = df_scaled["bug"].value_counts(dropna=False).sort_index().to_dict()
 
     summary_lines = [
         f"rows={len(df)}",
         f"columns={len(df.columns)}",
         f"feature_columns={len(feature_cols)}",
+        "feature_transform=log1p",
         f"scaler={scaler_name}",
+        f"bug_label_counts={bug_label_counts}",
         f"mapped_classes={matched}/{total}",
         f"match_strategy_counts={strategy_counts}",
         f"preprocessed_file={preprocessed_path}",
