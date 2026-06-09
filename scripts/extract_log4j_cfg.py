@@ -28,11 +28,18 @@ CFG_EDGE_TYPES = ["CFG_NEXT", "CFG_TRUE", "CFG_FALSE", "CFG_RETURN", "CFG_EXCEPT
 EDGE_TYPE_TO_ID = {name: i for i, name in enumerate(CFG_EDGE_TYPES)}
 
 
-def run(cmd: list[str], cwd: Path) -> None:
-    subprocess.run(cmd, cwd=cwd, check=True)
+def run(cmd: list[str], cwd: Path, log_path: Path | None = None) -> None:
+    if log_path is None:
+        subprocess.run(cmd, cwd=cwd, check=True)
+        return
+
+    result = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True, check=False)
+    log_path.write_text((result.stdout or "") + (result.stderr or ""), encoding="utf-8")
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
 
 
-def compile_sources(repo_root: Path, mapped: pd.DataFrame, classes_dir: Path) -> list[dict[str, str]]:
+def compile_sources(repo_root: Path, mapped: pd.DataFrame, classes_dir: Path, compile_log: Path) -> list[dict[str, str]]:
     classes_dir.mkdir(parents=True, exist_ok=True)
     all_sources = sorted(
         str(p)
@@ -43,25 +50,29 @@ def compile_sources(repo_root: Path, mapped: pd.DataFrame, classes_dir: Path) ->
     argfile = repo_root / "build/cfg_soot/javac_sources.txt"
     argfile.write_text("\n".join(all_sources) + "\n", encoding="utf-8")
     ecj_jar = repo_root / "tools/ecj/ecj-4.6.1.jar"
+    cmd = [
+        "java",
+        "-jar",
+        str(ecj_jar),
+        "-g",
+        "-1.3",
+        "-proceedOnError",
+        "-d",
+        str(classes_dir),
+        f"@{argfile}",
+    ]
     try:
-        run(
-            [
-                "java",
-                "-jar",
-                str(ecj_jar),
-                "-g",
-                "-1.3",
-                "-proceedOnError",
-                "-d",
-                str(classes_dir),
-                f"@{argfile}",
-            ],
-            cwd=repo_root,
-        )
+        run(cmd, cwd=repo_root, log_path=compile_log)
         return []
     except subprocess.CalledProcessError as exc:
         # Continue: partial class files may still exist and be analyzable by Soot.
-        return [{"file_id": "__global__", "source_path": "", "error": f"javac_partial_failure:{exc.returncode}"}]
+        return [
+            {
+                "file_id": "__global__",
+                "source_path": "",
+                "error": f"ecj_partial_failure:{exc.returncode}; see outputs/log4j/cfg/ecj_compile.log",
+            }
+        ]
 
 
 def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -404,6 +415,8 @@ def build_report(
         "- `outputs/log4j/cfg/cfg_summary.json`: global extraction statistics.",
         "- `outputs/log4j/cfg/parse_failures.json`: compile and Soot extraction issues.",
         "- `outputs/log4j/cfg/validation_issues.json`: CFG validation issue log.",
+        "- `outputs/log4j/cfg/ecj_compile.log`: ECJ compiler diagnostics captured during partial compilation.",
+        "- `outputs/log4j/cfg/soot_extractor.log`: Soot runner diagnostics captured during CFG extraction.",
         "",
         "## 8. Results",
         "",
@@ -437,7 +450,8 @@ def build_report(
         "- Two mapped interface-like classes currently receive placeholder `ENTRY -> EXIT` graphs because no concrete "
         "method body is available. Keep this distinction visible during experiments.",
         "- Log4j 1.0 is legacy Java source. ECJ emits compile diagnostics under the modern Java runtime while still "
-        "producing analyzable class files with `-proceedOnError`.",
+        "producing analyzable class files with `-proceedOnError`. These diagnostics are saved in "
+        "`outputs/log4j/cfg/ecj_compile.log` instead of being printed as terminal output.",
         "- One Soot method body retrieval issue is logged for `AppenderSkeleton`; other recoverable methods in that "
         "class remain included.",
         "- `CFG_BREAK` and `CFG_CONTINUE` are intentionally not exported as separate edge types by this backend. "
@@ -475,6 +489,8 @@ def main() -> None:
     build_dir = repo_root / "build/cfg_soot"
     classes_dir = build_dir / "classes"
     java_out = build_dir / "soot_cfg.tsv"
+    ecj_compile_log = out_dir / "ecj_compile.log"
+    soot_extractor_log = out_dir / "soot_extractor.log"
     java_src = repo_root / "scripts/soot_cfg_extractor.java"
     java_cls_dir = build_dir / "java"
     java_cls_dir.mkdir(parents=True, exist_ok=True)
@@ -490,7 +506,7 @@ def main() -> None:
     mapping_df = pd.read_csv(repo_root / "outputs/log4j/log4j_name_to_source_mapping.csv")
     mapped = mapping_df[mapping_df["source_path"].notna()].copy()
 
-    javac_failures = compile_sources(repo_root, mapped, classes_dir)
+    javac_failures = compile_sources(repo_root, mapped, classes_dir, ecj_compile_log)
 
     class_list = build_dir / "class_list.txt"
     class_list.write_text("\n".join(sorted(mapped["name"].astype(str).tolist())) + "\n", encoding="utf-8")
@@ -509,6 +525,7 @@ def main() -> None:
             str(java_out),
         ],
         cwd=repo_root,
+        log_path=soot_extractor_log,
     )
 
     parsed, soot_failures = parse_tsv(java_out)
@@ -589,6 +606,8 @@ def main() -> None:
         "node_type_vocab_size": len(NODE_TYPE_TO_ID),
         "edge_type_vocab_size": len(EDGE_TYPE_TO_ID),
         "backend": "soot",
+        "ecj_compile_log": "outputs/log4j/cfg/ecj_compile.log",
+        "soot_extractor_log": "outputs/log4j/cfg/soot_extractor.log",
     }
     (out_dir / "cfg_summary.json").write_text(json.dumps(summary, indent=2))
 
