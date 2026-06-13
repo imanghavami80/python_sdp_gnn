@@ -46,11 +46,9 @@ public class soot_cfg_extractor {
         Options.v().set_output_format(Options.output_format_none);
         Options.v().set_keep_line_number(true);
         Options.v().set_src_prec(Options.src_prec_only_class);
-        Options.v().set_process_dir(Collections.singletonList(classesDir));
         String cp = classesDir + File.pathSeparator + sourceRoot + File.pathSeparator + System.getProperty("java.class.path");
         Options.v().set_soot_classpath(cp);
-
-        Scene.v().loadNecessaryClasses();
+        Scene.v().loadBasicClasses();
 
         try (BufferedWriter w = Files.newBufferedWriter(outPath, StandardCharsets.UTF_8)) {
             for (String rawName : classes) {
