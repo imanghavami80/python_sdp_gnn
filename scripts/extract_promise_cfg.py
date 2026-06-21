@@ -40,12 +40,80 @@ CFG_NODE_TYPES = [
 ]
 NODE_TYPE_TO_ID = {name: idx for idx, name in enumerate(CFG_NODE_TYPES)}
 
-CFG_EDGE_TYPES = ["CFG_NEXT", "CFG_TRUE", "CFG_FALSE", "CFG_RETURN", "CFG_EXCEPTION"]
+CFG_EDGE_TYPES = [
+    "CFG_NEXT",
+    "CFG_TRUE",
+    "CFG_FALSE",
+    "CFG_RETURN",
+    "CFG_EXCEPTION",
+    "CFG_BACK",
+    "CFG_SWITCH_CASE",
+    "CFG_SWITCH_DEFAULT",
+]
 EDGE_TYPE_TO_ID = {name: idx for idx, name in enumerate(CFG_EDGE_TYPES)}
 
-STRUCTURAL_FEATURE_DIM = 3
+CFG_STMT_KINDS = [
+    "NO_STMT",
+    "ASSIGN",
+    "INVOKE",
+    "IDENTITY",
+    "IF",
+    "GOTO",
+    "SWITCH",
+    "RETURN_VALUE",
+    "RETURN_VOID",
+    "THROW",
+    "MONITOR",
+    "NOP",
+    "OTHER",
+]
+STMT_KIND_TO_ID = {name: idx for idx, name in enumerate(CFG_STMT_KINDS)}
+
+CFG_INVOKE_KINDS = [
+    "NO_INVOKE",
+    "STATIC_INVOKE",
+    "VIRTUAL_INVOKE",
+    "INTERFACE_INVOKE",
+    "SPECIAL_INVOKE",
+    "DYNAMIC_INVOKE",
+    "UNKNOWN_INVOKE",
+]
+INVOKE_KIND_TO_ID = {name: idx for idx, name in enumerate(CFG_INVOKE_KINDS)}
+
+BASE_FEATURE_NAMES = ["line_position", "has_source_line", "is_synthetic"]
+INSTRUCTION_FLAG_NAMES = [
+    "has_method_call",
+    "has_field_read",
+    "has_field_write",
+    "has_array_read",
+    "has_array_write",
+    "has_new_object",
+    "has_new_array",
+    "has_cast",
+    "has_arithmetic_op",
+    "has_comparison_op",
+    "has_null_constant",
+    "has_string_constant",
+    "has_numeric_constant",
+]
+CFG_ROLE_FEATURE_NAMES = [
+    "in_degree_log",
+    "out_degree_log",
+    "is_branch_node",
+    "is_join_node",
+    "is_terminal_node",
+    "node_position_in_method",
+    "method_size_normalized",
+    "is_loop_header",
+    "is_in_loop",
+]
+FEATURE_NAMES = [*BASE_FEATURE_NAMES, *INSTRUCTION_FLAG_NAMES, *CFG_ROLE_FEATURE_NAMES]
+
+STRUCTURAL_FEATURE_DIM = len(FEATURE_NAMES)
 NODE_TYPE_EMBEDDING_DIM = 32
-MODEL_NODE_FEATURE_DIM = STRUCTURAL_FEATURE_DIM + NODE_TYPE_EMBEDDING_DIM
+STMT_KIND_EMBEDDING_DIM = 16
+INVOKE_KIND_EMBEDDING_DIM = 8
+MODEL_NODE_FEATURE_DIM = STRUCTURAL_FEATURE_DIM + NODE_TYPE_EMBEDDING_DIM + STMT_KIND_EMBEDDING_DIM + INVOKE_KIND_EMBEDDING_DIM
 
 
 def run(cmd: list[str], cwd: Path, log_path: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -95,6 +163,14 @@ def project_classpath(source_root: Path, classes_dir: Path) -> str:
     jars = [str(path) for path in sorted(source_root.rglob("*.jar"))]
     entries = [str(classes_dir), str(source_root), *jars]
     return os.pathsep.join(entries)
+
+
+def empty_instruction_flags() -> dict[str, int]:
+    return {name: 0 for name in INSTRUCTION_FLAG_NAMES}
+
+
+def parse_flag(value: str) -> int:
+    return 1 if str(value).strip() == "1" else 0
 
 
 def compile_sources(
@@ -175,6 +251,15 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
             )
         elif rec == "NODE":
             method_id = parts[2]
+            stmt_kind = parts[7] if len(parts) > 7 and parts[7] in STMT_KIND_TO_ID else "OTHER"
+            invoke_kind = parts[8] if len(parts) > 8 and parts[8] in INVOKE_KIND_TO_ID else "NO_INVOKE"
+            instruction_flags = empty_instruction_flags()
+            if len(parts) >= 9 + len(INSTRUCTION_FLAG_NAMES):
+                for flag_name, flag_value in zip(INSTRUCTION_FLAG_NAMES, parts[9 : 9 + len(INSTRUCTION_FLAG_NAMES)], strict=True):
+                    instruction_flags[flag_name] = parse_flag(flag_value)
+                snippet_idx = 9 + len(INSTRUCTION_FLAG_NAMES)
+            else:
+                snippet_idx = 7
             node = {
                 "local_id": int(parts[3]),
                 "method_id": method_id,
@@ -182,7 +267,12 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
                 "line_start": int(parts[5]) if parts[5] else None,
                 "line_end": int(parts[5]) if parts[5] else None,
                 "is_synthetic": parts[6] == "1",
-                "snippet": parts[7] if len(parts) > 7 else "",
+                "stmt_kind": stmt_kind,
+                "stmt_kind_id": STMT_KIND_TO_ID[stmt_kind],
+                "invoke_kind": invoke_kind,
+                "invoke_kind_id": INVOKE_KIND_TO_ID[invoke_kind],
+                "instruction_flags": instruction_flags,
+                "snippet": parts[snippet_idx] if len(parts) > snippet_idx else "",
             }
             graph["method_nodes"][method_id].append(node)
         elif rec == "EDGE":
@@ -208,10 +298,16 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
                 nodes.append(
                     {
                         "id": next_id,
+                        "local_id": node["local_id"],
                         "file_id": class_name,
                         "method_id": method_id,
                         "node_type": node_type,
                         "node_type_id": NODE_TYPE_TO_ID[node_type],
+                        "stmt_kind": node["stmt_kind"],
+                        "stmt_kind_id": node["stmt_kind_id"],
+                        "invoke_kind": node["invoke_kind"],
+                        "invoke_kind_id": node["invoke_kind_id"],
+                        "instruction_flags": node["instruction_flags"],
                         "line_start": node["line_start"],
                         "line_end": node["line_end"],
                         "snippet": node["snippet"][:200],
@@ -236,6 +332,7 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
                 }
             )
 
+        annotate_cfg_roles(nodes, edges)
         methods: list[dict[str, Any]] = []
         for method in graph["methods"]:
             entry_node = node_id_map.get((method["method_id"], method["entry_local"]))
@@ -269,9 +366,69 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
     return parsed, failures
 
 
+def annotate_cfg_roles(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
+    n_nodes = len(nodes)
+    in_degree = [0] * n_nodes
+    out_degree = [0] * n_nodes
+    for edge in edges:
+        source = int(edge["source"])
+        target = int(edge["target"])
+        if 0 <= source < n_nodes:
+            out_degree[source] += 1
+        if 0 <= target < n_nodes:
+            in_degree[target] += 1
+
+    nodes_by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        nodes_by_method[str(node["method_id"])].append(node)
+    for method_nodes in nodes_by_method.values():
+        method_nodes.sort(key=lambda item: int(item["id"]))
+    max_method_size = max((len(method_nodes) for method_nodes in nodes_by_method.values()), default=1)
+
+    is_loop_header = [0] * n_nodes
+    is_in_loop = [0] * n_nodes
+    for edge in edges:
+        if edge["edge_type"] != "CFG_BACK":
+            continue
+        source = int(edge["source"])
+        target = int(edge["target"])
+        if not (0 <= source < n_nodes and 0 <= target < n_nodes):
+            continue
+        if nodes[source]["method_id"] != nodes[target]["method_id"]:
+            continue
+        is_loop_header[target] = 1
+        start, end = sorted((source, target))
+        for node in nodes_by_method[str(nodes[source]["method_id"])]:
+            node_id = int(node["id"])
+            if start <= node_id <= end:
+                is_in_loop[node_id] = 1
+
+    for method_nodes in nodes_by_method.values():
+        method_size = len(method_nodes)
+        method_denominator = max(method_size - 1, 1)
+        method_size_normalized = float(method_size / max_method_size) if max_method_size else 0.0
+        for position, node in enumerate(method_nodes):
+            node_id = int(node["id"])
+            node["cfg_role_features"] = {
+                "in_degree": int(in_degree[node_id]),
+                "out_degree": int(out_degree[node_id]),
+                "in_degree_log": float(np.log1p(in_degree[node_id])),
+                "out_degree_log": float(np.log1p(out_degree[node_id])),
+                "is_branch_node": 1 if out_degree[node_id] > 1 else 0,
+                "is_join_node": 1 if in_degree[node_id] > 1 else 0,
+                "is_terminal_node": 1 if node["node_type"] in {"EXIT", "RETURN", "THROW"} or out_degree[node_id] == 0 else 0,
+                "node_position_in_method": float(position / method_denominator),
+                "method_size_normalized": method_size_normalized,
+                "is_loop_header": int(is_loop_header[node_id]),
+                "is_in_loop": int(is_in_loop[node_id]),
+            }
+
+
 def build_tensors(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> dict[str, np.ndarray]:
     x = np.zeros((len(nodes), STRUCTURAL_FEATURE_DIM), dtype=np.float32)
     node_type_id = np.zeros((len(nodes),), dtype=np.int64)
+    stmt_kind_id = np.zeros((len(nodes),), dtype=np.int64)
+    invoke_kind_id = np.zeros((len(nodes),), dtype=np.int64)
     source_lines = [int(node["line_start"]) for node in nodes if node.get("line_start") is not None]
     min_line = min(source_lines) if source_lines else 0
     max_line = max(source_lines) if source_lines else min_line
@@ -283,7 +440,16 @@ def build_tensors(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> d
             x[i, 0] = float((int(node["line_start"]) - min_line) / line_span)
             x[i, 1] = 1.0
         x[i, 2] = 1.0 if node["is_synthetic"] else 0.0
+        offset = len(BASE_FEATURE_NAMES)
+        for j, flag_name in enumerate(INSTRUCTION_FLAG_NAMES):
+            x[i, offset + j] = float(node.get("instruction_flags", {}).get(flag_name, 0))
+        offset += len(INSTRUCTION_FLAG_NAMES)
+        role_features = node.get("cfg_role_features", {})
+        for j, feature_name in enumerate(CFG_ROLE_FEATURE_NAMES):
+            x[i, offset + j] = float(role_features.get(feature_name, 0.0))
         node_type_id[i] = node["node_type_id"]
+        stmt_kind_id[i] = node.get("stmt_kind_id", STMT_KIND_TO_ID["OTHER"])
+        invoke_kind_id[i] = node.get("invoke_kind_id", INVOKE_KIND_TO_ID["NO_INVOKE"])
 
     if edges:
         edge_index = np.array([[edge["source"] for edge in edges], [edge["target"] for edge in edges]], dtype=np.int64)
@@ -292,7 +458,14 @@ def build_tensors(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> d
         edge_index = np.zeros((2, 0), dtype=np.int64)
         edge_type = np.zeros((0,), dtype=np.int64)
 
-    return {"x": x, "node_type_id": node_type_id, "edge_index": edge_index, "edge_type": edge_type}
+    return {
+        "x": x,
+        "node_type_id": node_type_id,
+        "stmt_kind_id": stmt_kind_id,
+        "invoke_kind_id": invoke_kind_id,
+        "edge_index": edge_index,
+        "edge_type": edge_type,
+    }
 
 
 def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str, label: int | None) -> dict[str, Any]:
@@ -305,6 +478,11 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
             "method_id": method_id,
             "node_type": "ENTRY",
             "node_type_id": NODE_TYPE_TO_ID["ENTRY"],
+            "stmt_kind": "NO_STMT",
+            "stmt_kind_id": STMT_KIND_TO_ID["NO_STMT"],
+            "invoke_kind": "NO_INVOKE",
+            "invoke_kind_id": INVOKE_KIND_TO_ID["NO_INVOKE"],
+            "instruction_flags": empty_instruction_flags(),
             "line_start": None,
             "line_end": None,
             "snippet": "__ENTRY__",
@@ -316,6 +494,11 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
             "method_id": method_id,
             "node_type": "EXIT",
             "node_type_id": NODE_TYPE_TO_ID["EXIT"],
+            "stmt_kind": "NO_STMT",
+            "stmt_kind_id": STMT_KIND_TO_ID["NO_STMT"],
+            "invoke_kind": "NO_INVOKE",
+            "invoke_kind_id": INVOKE_KIND_TO_ID["NO_INVOKE"],
+            "instruction_flags": empty_instruction_flags(),
             "line_start": None,
             "line_end": None,
             "snippet": "__EXIT__",
@@ -323,6 +506,7 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
         },
     ]
     edges = [{"source": 0, "target": 1, "edge_type": "CFG_NEXT", "edge_type_id": EDGE_TYPE_TO_ID["CFG_NEXT"]}]
+    annotate_cfg_roles(nodes, edges)
     graph = {
         "graph_id": gid,
         "dataset_name": dataset_name,
@@ -331,7 +515,7 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
         "label": label,
         "num_nodes": 2,
         "num_edges": 1,
-                "node_feature_dim": STRUCTURAL_FEATURE_DIM,
+        "node_feature_dim": STRUCTURAL_FEATURE_DIM,
         "nodes": nodes,
         "edges": edges,
         "methods": [{"method_id": method_id, "kind": "placeholder", "entry_node": 0, "exit_node": 1}],
@@ -346,7 +530,7 @@ def cfg_method_mermaid(graph: dict[str, Any], method_id: str, limit: int = 30) -
     lines = ["graph TD"]
     for node in nodes:
         snippet = node["snippet"].replace('"', "'")
-        label = f"{node['node_type']}#{node['id']}"
+        label = f"{node['node_type']}:{node.get('stmt_kind', 'OTHER')}#{node['id']}"
         if snippet and not node["is_synthetic"]:
             label += f" | {snippet[:55]}"
         lines.append(f'  N{node["id"]}["{label}"]')
@@ -507,10 +691,14 @@ def write_graph_outputs(
     node_type_path = tensors_dir / f"{safe_name}_node_type_id.npy"
     edge_index_path = tensors_dir / f"{safe_name}_edge_index.npy"
     edge_type_path = tensors_dir / f"{safe_name}_edge_type.npy"
+    stmt_kind_path = tensors_dir / f"{safe_name}_stmt_kind_id.npy"
+    invoke_kind_path = tensors_dir / f"{safe_name}_invoke_kind_id.npy"
 
     graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
     np.save(x_path, tensors["x"])
     np.save(node_type_path, tensors["node_type_id"])
+    np.save(stmt_kind_path, tensors["stmt_kind_id"])
+    np.save(invoke_kind_path, tensors["invoke_kind_id"])
     np.save(edge_index_path, tensors["edge_index"])
     np.save(edge_type_path, tensors["edge_type"])
 
@@ -524,10 +712,12 @@ def write_graph_outputs(
         "num_nodes": int(graph["num_nodes"]),
         "num_edges": int(graph["num_edges"]),
         "num_methods": int(len(graph["methods"])),
-        "node_feature_dim": STRUCTURAL_FEATURE_DIM,
+        "node_feature_dim": int(tensors["x"].shape[1]),
         "graph_json": str(graph_path),
         "x_npy": str(x_path),
         "node_type_id_npy": str(node_type_path),
+        "stmt_kind_id_npy": str(stmt_kind_path),
+        "invoke_kind_id_npy": str(invoke_kind_path),
         "edge_index_npy": str(edge_index_path),
         "edge_type_npy": str(edge_type_path),
     }
@@ -538,12 +728,18 @@ def validate_outputs(index_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     for row in index_rows:
         x = np.load(row["x_npy"])
         node_type_id = np.load(row["node_type_id_npy"])
+        stmt_kind_id = np.load(row["stmt_kind_id_npy"])
+        invoke_kind_id = np.load(row["invoke_kind_id_npy"])
         edge_index = np.load(row["edge_index_npy"])
         edge_type = np.load(row["edge_type_npy"])
         if x.shape != (row["num_nodes"], STRUCTURAL_FEATURE_DIM):
             issues.append({"graph_id": row["graph_id"], "issue": f"x_shape:{x.shape}"})
         if node_type_id.shape != (row["num_nodes"],):
             issues.append({"graph_id": row["graph_id"], "issue": f"node_type_shape:{node_type_id.shape}"})
+        if stmt_kind_id.shape != (row["num_nodes"],):
+            issues.append({"graph_id": row["graph_id"], "issue": f"stmt_kind_shape:{stmt_kind_id.shape}"})
+        if invoke_kind_id.shape != (row["num_nodes"],):
+            issues.append({"graph_id": row["graph_id"], "issue": f"invoke_kind_shape:{invoke_kind_id.shape}"})
         if edge_index.shape != (2, row["num_edges"]):
             issues.append({"graph_id": row["graph_id"], "issue": f"edge_index_shape:{edge_index.shape}"})
         if edge_type.shape != (row["num_edges"],):
@@ -555,6 +751,8 @@ def validate_outputs(index_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issues: list[dict[str, str]]) -> str:
     node_counts: Counter[str] = Counter()
+    stmt_counts: Counter[str] = Counter()
+    invoke_counts: Counter[str] = Counter()
     edge_counts: Counter[str] = Counter()
     example_graph: dict[str, Any] | None = None
     for row in index_rows:
@@ -562,10 +760,15 @@ def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issu
         if example_graph is None and graph["methods"] and row["extraction_mode"] == "soot":
             example_graph = graph
         node_counts.update(node["node_type"] for node in graph["nodes"])
+        stmt_counts.update(node.get("stmt_kind", "OTHER") for node in graph["nodes"])
+        invoke_counts.update(node.get("invoke_kind", "NO_INVOKE") for node in graph["nodes"])
         edge_counts.update(edge["edge_type"] for edge in graph["edges"])
 
     node_type_rows = [f"| `{name}` | {idx} |" for name, idx in NODE_TYPE_TO_ID.items()]
+    stmt_kind_rows = [f"| `{name}` | {idx} |" for name, idx in STMT_KIND_TO_ID.items()]
+    invoke_kind_rows = [f"| `{name}` | {idx} |" for name, idx in INVOKE_KIND_TO_ID.items()]
     edge_type_rows = [f"| `{name}` | {idx} |" for name, idx in EDGE_TYPE_TO_ID.items()]
+    feature_rows = [f"| {idx} | `{name}` |" for idx, name in enumerate(FEATURE_NAMES)]
     dataset_rows = [
         "| `{dataset}` | {requested} | {graphs} | {soot_graphs} | {placeholder_graphs} | {issues} | `{source_level}` |".format(**row)
         for row in summary["datasets"]
@@ -607,32 +810,56 @@ def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issu
         "```",
         "",
         "## 4. Node Features",
-        "The stored structural tensor is deliberately compact:",
+        "The CFG node representation now separates categorical syntax/IR labels from numeric features:",
         "",
         "```text",
-        "x(node) = [normalized_line_position, has_source_line, is_synthetic]",
+        "node_type_id      -> broad CFG role: ENTRY, EXIT, STATEMENT, CONDITION, RETURN, ...",
+        "stmt_kind_id      -> Jimple statement kind: ASSIGN, INVOKE, IF, GOTO, RETURN_VALUE, ...",
+        "invoke_kind_id    -> invocation dispatch kind: STATIC, VIRTUAL, INTERFACE, SPECIAL, ...",
+        "x(node)          -> numeric/binary instruction and CFG-role features",
         "```",
         "",
-        "The exact CFG node type is stored separately in `node_type_id.npy`. During GNN training, use a trainable "
-        f"`Embedding(vocab_size={summary['node_type_vocab_size']}, embedding_dim={summary['node_type_embedding_dim']})` "
-        "and concatenate the learned type embedding with the 3 structural features.",
+        "During GNN training, use trainable embeddings for `node_type_id`, `stmt_kind_id`, and `invoke_kind_id`, "
+        "then concatenate those learned categorical embeddings with the numeric `x.npy` features.",
         "",
         "```text",
-        "complete_node_x = concat(node_type_embedding(node_type_id), structural_x)",
+        "complete_node_x = concat(",
+        "  node_type_embedding(node_type_id),",
+        "  stmt_kind_embedding(stmt_kind_id),",
+        "  invoke_kind_embedding(invoke_kind_id),",
+        "  x",
+        ")",
         "```",
         "",
-        f"- Structural feature dimension: {summary['structural_feature_dim']}",
+        f"- Numeric feature dimension: {summary['structural_feature_dim']}",
         f"- Node type embedding dimension: {summary['node_type_embedding_dim']}",
+        f"- Statement kind embedding dimension: {summary['stmt_kind_embedding_dim']}",
+        f"- Invocation kind embedding dimension: {summary['invoke_kind_embedding_dim']}",
         f"- Model node feature dimension after concatenation: {summary['model_node_feature_dim']}",
         "",
-        "CFG behavior is represented by directed typed edges, not by semantic-heavy node features.",
+        "The numeric feature vector includes source-position features, instruction flags, and CFG structural-role features.",
         "",
-        "### 4.1 CFG Node Types",
+        "### 4.1 Numeric Node Feature Layout",
+        "| Index | Feature |",
+        "| ---: | --- |",
+        *feature_rows,
+        "",
+        "### 4.2 CFG Node Types",
         "| Node type | ID |",
         "| --- | ---: |",
         *node_type_rows,
         "",
-        "### 4.2 CFG Edge Types",
+        "### 4.3 Statement Kinds",
+        "| Statement kind | ID |",
+        "| --- | ---: |",
+        *stmt_kind_rows,
+        "",
+        "### 4.4 Invocation Kinds",
+        "| Invocation kind | ID |",
+        "| --- | ---: |",
+        *invoke_kind_rows,
+        "",
+        "### 4.5 CFG Edge Types",
         "| Edge type | ID |",
         "| --- | ---: |",
         *edge_type_rows,
@@ -644,16 +871,24 @@ def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issu
         "| `CFG_FALSE` | Target reached when an `if` condition evaluates false. |",
         "| `CFG_RETURN` | Return statement flow to the method `EXIT`. |",
         "| `CFG_EXCEPTION` | Exceptional successor or explicit throw flow. |",
+        "| `CFG_BACK` | Approximate loop/back edge where control returns to an earlier statement. |",
+        "| `CFG_SWITCH_CASE` | Non-default switch case successor. |",
+        "| `CFG_SWITCH_DEFAULT` | Default switch successor. |",
         "",
         "## 5. Output Files",
         "- `graph_index.csv`: one row per generated CFG graph with graph/tensor paths.",
         "- `graphs/*.json`: readable file-level CFG graphs.",
-        "- `tensors/*_x.npy`: structural node feature tensors.",
+        "- `tensors/*_x.npy`: numeric node feature tensors.",
         "- `tensors/*_node_type_id.npy`: exact CFG node type ids.",
+        "- `tensors/*_stmt_kind_id.npy`: Jimple statement kind ids.",
+        "- `tensors/*_invoke_kind_id.npy`: invocation dispatch kind ids.",
         "- `tensors/*_edge_index.npy`: CFG connectivity tensors.",
         "- `tensors/*_edge_type.npy`: CFG relation type tensors.",
         "- `node_type_vocab.json`: stable CFG node type vocabulary.",
+        "- `stmt_kind_vocab.json`: stable statement kind vocabulary.",
+        "- `invoke_kind_vocab.json`: stable invocation kind vocabulary.",
         "- `edge_type_vocab.json`: stable CFG edge type vocabulary.",
+        "- `feature_names.json`: ordered numeric node feature names for `x.npy`.",
         "- `cfg_summary.json`: global extraction statistics.",
         "- `parse_failures.json`: ECJ/Soot extraction issue log.",
         "- `validation_issues.json`: tensor validation issue log.",
@@ -685,13 +920,20 @@ def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issu
         "### 8.1 Node Types",
         *[f"- `{name}`: {count}" for name, count in node_counts.most_common()],
         "",
-        "### 8.2 Edge Types",
+        "### 8.2 Statement Kinds",
+        *[f"- `{name}`: {count}" for name, count in stmt_counts.most_common()],
+        "",
+        "### 8.3 Invocation Kinds",
+        *[f"- `{name}`: {count}" for name, count in invoke_counts.most_common()],
+        "",
+        "### 8.4 Edge Types",
         *[f"- `{name}`: {count}" for name, count in edge_counts.most_common()],
         "",
         "## 9. Notes",
         "- This CFG view captures execution order and branch behavior, not syntax hierarchy.",
-        "- Keep behavior in CFG edge types instead of encoding it into node features.",
-        "- Soot operates on Jimple statements, so snippets are normalized intermediate-representation statements.",
+        "- Edge behavior remains in typed CFG edges, while node features describe what each Jimple statement does.",
+        "- Soot operates on Jimple statements, so snippets and statement kinds are normalized intermediate-representation statements.",
+        "- `CFG_BACK` and loop membership are approximate and derived from control-flow edges that return to earlier statements.",
         "- ECJ diagnostics are expected for legacy PROMISE projects and are saved under `outputs/promise/cfg/logs/`.",
         "- Placeholder graphs preserve dataset alignment but should be tracked during experiments.",
         "- `CFG_BREAK` and `CFG_CONTINUE` are not exported separately by this backend; Soot resolves them to successor edges.",
@@ -735,7 +977,10 @@ def main() -> None:
 
     graphs_dir, tensors_dir, logs_dir = prepare_dirs(output_dir, build_dir, clean=not args.no_clean)
     (output_dir / "node_type_vocab.json").write_text(json.dumps(NODE_TYPE_TO_ID, indent=2), encoding="utf-8")
+    (output_dir / "stmt_kind_vocab.json").write_text(json.dumps(STMT_KIND_TO_ID, indent=2), encoding="utf-8")
+    (output_dir / "invoke_kind_vocab.json").write_text(json.dumps(INVOKE_KIND_TO_ID, indent=2), encoding="utf-8")
     (output_dir / "edge_type_vocab.json").write_text(json.dumps(EDGE_TYPE_TO_ID, indent=2), encoding="utf-8")
+    (output_dir / "feature_names.json").write_text(json.dumps(FEATURE_NAMES, indent=2), encoding="utf-8")
 
     input_df = pd.read_csv(input_csv)
     mapped = load_mapped_rows(input_csv, args.dataset_name)
@@ -840,10 +1085,15 @@ def main() -> None:
         "avg_nodes_per_file": float(total_nodes / len(index_rows)) if index_rows else 0.0,
         "avg_edges_per_file": float(total_edges / len(index_rows)) if index_rows else 0.0,
         "structural_feature_dim": STRUCTURAL_FEATURE_DIM,
+        "feature_names": FEATURE_NAMES,
         "node_type_embedding_dim": NODE_TYPE_EMBEDDING_DIM,
+        "stmt_kind_embedding_dim": STMT_KIND_EMBEDDING_DIM,
+        "invoke_kind_embedding_dim": INVOKE_KIND_EMBEDDING_DIM,
         "model_node_feature_dim": MODEL_NODE_FEATURE_DIM,
         "node_feature_dim": STRUCTURAL_FEATURE_DIM,
         "node_type_vocab_size": len(NODE_TYPE_TO_ID),
+        "stmt_kind_vocab_size": len(STMT_KIND_TO_ID),
+        "invoke_kind_vocab_size": len(INVOKE_KIND_TO_ID),
         "edge_type_vocab_size": len(EDGE_TYPE_TO_ID),
         "backend": "soot",
         "datasets": dataset_summaries,

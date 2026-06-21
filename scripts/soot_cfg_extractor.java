@@ -7,12 +7,9 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.Predicate;
 
 public class soot_cfg_extractor {
-    private static final Set<String> EDGE_TYPES = new HashSet<>(Arrays.asList(
-            "CFG_NEXT", "CFG_TRUE", "CFG_FALSE", "CFG_RETURN", "CFG_EXCEPTION"
-    ));
-
     private static String esc(String s) {
         if (s == null) return "";
         return s.replace("\\", "\\\\").replace("\t", " ").replace("\n", " ").replace("\r", " ");
@@ -24,6 +21,150 @@ public class soot_cfg_extractor {
         if (u instanceof ReturnStmt || u instanceof ReturnVoidStmt) return "RETURN";
         if (u instanceof ThrowStmt) return "THROW";
         return "STATEMENT";
+    }
+
+    private static String stmtKind(Unit u) {
+        if (u instanceof IfStmt) return "IF";
+        if (u instanceof GotoStmt) return "GOTO";
+        if (u instanceof TableSwitchStmt || u instanceof LookupSwitchStmt) return "SWITCH";
+        if (u instanceof ReturnStmt) return "RETURN_VALUE";
+        if (u instanceof ReturnVoidStmt) return "RETURN_VOID";
+        if (u instanceof ThrowStmt) return "THROW";
+        if (u instanceof EnterMonitorStmt || u instanceof ExitMonitorStmt) return "MONITOR";
+        if (u instanceof NopStmt) return "NOP";
+        if (u instanceof IdentityStmt) return "IDENTITY";
+        if (u instanceof AssignStmt) return "ASSIGN";
+        if (u instanceof InvokeStmt) return "INVOKE";
+        return "OTHER";
+    }
+
+    private static InvokeExpr invokeExpr(Unit u) {
+        if (u instanceof Stmt) {
+            Stmt s = (Stmt) u;
+            if (s.containsInvokeExpr()) return s.getInvokeExpr();
+        }
+        return null;
+    }
+
+    private static String invokeKind(Unit u) {
+        InvokeExpr expr = invokeExpr(u);
+        if (expr == null) return "NO_INVOKE";
+        if (expr instanceof StaticInvokeExpr) return "STATIC_INVOKE";
+        if (expr instanceof VirtualInvokeExpr) return "VIRTUAL_INVOKE";
+        if (expr instanceof InterfaceInvokeExpr) return "INTERFACE_INVOKE";
+        if (expr instanceof SpecialInvokeExpr) return "SPECIAL_INVOKE";
+        if (expr instanceof DynamicInvokeExpr) return "DYNAMIC_INVOKE";
+        return "UNKNOWN_INVOKE";
+    }
+
+    private static boolean valueMatches(Value v, Predicate<Value> pred, Set<Value> seen) {
+        if (v == null) return false;
+        if (seen.contains(v)) return false;
+        seen.add(v);
+        if (pred.test(v)) return true;
+        for (ValueBox box : v.getUseBoxes()) {
+            if (valueMatches(box.getValue(), pred, seen)) return true;
+        }
+        return false;
+    }
+
+    private static boolean unitMatches(Unit u, Predicate<Value> pred) {
+        for (ValueBox box : u.getUseBoxes()) {
+            if (valueMatches(box.getValue(), pred, new HashSet<Value>())) return true;
+        }
+        for (ValueBox box : u.getDefBoxes()) {
+            if (valueMatches(box.getValue(), pred, new HashSet<Value>())) return true;
+        }
+        return false;
+    }
+
+    private static boolean unitUseMatches(Unit u, Predicate<Value> pred) {
+        for (ValueBox box : u.getUseBoxes()) {
+            if (valueMatches(box.getValue(), pred, new HashSet<Value>())) return true;
+        }
+        return false;
+    }
+
+    private static boolean isArithmeticValue(Value v) {
+        return v instanceof AddExpr || v instanceof SubExpr || v instanceof MulExpr || v instanceof DivExpr || v instanceof RemExpr
+                || v instanceof ShlExpr || v instanceof ShrExpr || v instanceof UshrExpr
+                || v instanceof AndExpr || v instanceof OrExpr || v instanceof XorExpr || v instanceof NegExpr;
+    }
+
+    private static boolean isComparisonValue(Value v) {
+        return v instanceof ConditionExpr || v instanceof CmpExpr || v instanceof CmpgExpr || v instanceof CmplExpr;
+    }
+
+    private static boolean hasFieldWrite(Unit u) {
+        return u instanceof AssignStmt && ((AssignStmt) u).getLeftOp() instanceof FieldRef;
+    }
+
+    private static boolean hasArrayWrite(Unit u) {
+        return u instanceof AssignStmt && ((AssignStmt) u).getLeftOp() instanceof ArrayRef;
+    }
+
+    private static String bit(boolean value) {
+        return value ? "1" : "0";
+    }
+
+    private static String instructionFlags(Unit u) {
+        boolean hasMethodCall = invokeExpr(u) != null;
+        boolean hasFieldRead = unitUseMatches(u, v -> v instanceof FieldRef);
+        boolean hasFieldWrite = hasFieldWrite(u);
+        boolean hasArrayRead = unitUseMatches(u, v -> v instanceof ArrayRef);
+        boolean hasArrayWrite = hasArrayWrite(u);
+        boolean hasNewObject = unitMatches(u, v -> v instanceof NewExpr);
+        boolean hasNewArray = unitMatches(u, v -> v instanceof NewArrayExpr || v instanceof NewMultiArrayExpr);
+        boolean hasCast = unitMatches(u, v -> v instanceof CastExpr);
+        boolean hasArithmeticOp = unitMatches(u, soot_cfg_extractor::isArithmeticValue);
+        boolean hasComparisonOp = unitMatches(u, soot_cfg_extractor::isComparisonValue);
+        boolean hasNullConstant = unitMatches(u, v -> v instanceof NullConstant);
+        boolean hasStringConstant = unitMatches(u, v -> v instanceof StringConstant);
+        boolean hasNumericConstant = unitMatches(u, v -> v instanceof NumericConstant);
+
+        return String.join("\t", Arrays.asList(
+                bit(hasMethodCall),
+                bit(hasFieldRead),
+                bit(hasFieldWrite),
+                bit(hasArrayRead),
+                bit(hasArrayWrite),
+                bit(hasNewObject),
+                bit(hasNewArray),
+                bit(hasCast),
+                bit(hasArithmeticOp),
+                bit(hasComparisonOp),
+                bit(hasNullConstant),
+                bit(hasStringConstant),
+                bit(hasNumericConstant)
+        ));
+    }
+
+    private static boolean isBackEdge(Unit src, Unit dst, Map<Unit, Integer> uid) {
+        Integer srcId = uid.get(src);
+        Integer dstId = uid.get(dst);
+        return srcId != null && dstId != null && dstId <= srcId;
+    }
+
+    private static void writeEdge(BufferedWriter w, String className, String methodId, int src, int dst, String edgeType) throws IOException {
+        w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + dst + "\t" + edgeType + "\n");
+    }
+
+    private static void writeSemanticEdge(
+            BufferedWriter w,
+            String className,
+            String methodId,
+            Unit srcUnit,
+            Unit dstUnit,
+            String edgeType,
+            Map<Unit, Integer> uid
+    ) throws IOException {
+        Integer src = uid.get(srcUnit);
+        Integer dst = uid.get(dstUnit);
+        if (src == null || dst == null) return;
+        writeEdge(w, className, methodId, src, dst, edgeType);
+        if (isBackEdge(srcUnit, dstUnit, uid) && !"CFG_BACK".equals(edgeType)) {
+            writeEdge(w, className, methodId, src, dst, "CFG_BACK");
+        }
     }
 
     public static void main(String[] args) throws Exception {
@@ -93,19 +234,22 @@ public class soot_cfg_extractor {
                         int exit = 1;
 
                         w.write("METHOD\t" + className + "\t" + methodId + "\t" + (m.isConstructor() ? "constructor" : "method") + "\t" + entry + "\t" + exit + "\n");
-                        w.write("NODE\t" + className + "\t" + methodId + "\t" + entry + "\tENTRY\t\t1\t__ENTRY__\n");
-                        w.write("NODE\t" + className + "\t" + methodId + "\t" + exit + "\tEXIT\t\t1\t__EXIT__\n");
+                        w.write("NODE\t" + className + "\t" + methodId + "\t" + entry + "\tENTRY\t\t1\tNO_STMT\tNO_INVOKE\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t__ENTRY__\n");
+                        w.write("NODE\t" + className + "\t" + methodId + "\t" + exit + "\tEXIT\t\t1\tNO_STMT\tNO_INVOKE\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t__EXIT__\n");
 
                         for (Unit u : units) {
                             int line = u.getJavaSourceStartLineNumber();
                             String lineStr = line > 0 ? Integer.toString(line) : "";
-                            w.write("NODE\t" + className + "\t" + methodId + "\t" + uid.get(u) + "\t" + nodeType(u) + "\t" + lineStr + "\t0\t" + esc(u.toString()) + "\n");
+                            w.write(
+                                    "NODE\t" + className + "\t" + methodId + "\t" + uid.get(u) + "\t" + nodeType(u) + "\t" + lineStr
+                                            + "\t0\t" + stmtKind(u) + "\t" + invokeKind(u) + "\t" + instructionFlags(u) + "\t" + esc(u.toString()) + "\n"
+                            );
                         }
 
                         for (Unit h : g.getHeads()) {
                             Integer hid = uid.get(h);
                             if (hid != null) {
-                                w.write("EDGE\t" + className + "\t" + methodId + "\t" + entry + "\t" + hid + "\tCFG_NEXT\n");
+                                writeEdge(w, className, methodId, entry, hid, "CFG_NEXT");
                             }
                         }
 
@@ -115,25 +259,37 @@ public class soot_cfg_extractor {
 
                             if (u instanceof ReturnStmt || u instanceof ReturnVoidStmt) {
                                 hasAnyOut = true;
-                                w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + exit + "\tCFG_RETURN\n");
+                                writeEdge(w, className, methodId, src, exit, "CFG_RETURN");
                             }
 
                             List<Unit> succs = g.getUnexceptionalSuccsOf(u);
                             if (u instanceof IfStmt) {
                                 Unit t = ((IfStmt) u).getTarget();
                                 for (Unit s : succs) {
-                                    Integer tid = uid.get(s);
-                                    if (tid == null) continue;
+                                    if (!uid.containsKey(s)) continue;
                                     hasAnyOut = true;
                                     String et = s.equals(t) ? "CFG_TRUE" : "CFG_FALSE";
-                                    w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + tid + "\t" + et + "\n");
+                                    writeSemanticEdge(w, className, methodId, u, s, et, uid);
+                                }
+                            } else if (u instanceof TableSwitchStmt || u instanceof LookupSwitchStmt) {
+                                Unit defaultTarget;
+                                if (u instanceof TableSwitchStmt) {
+                                    defaultTarget = ((TableSwitchStmt) u).getDefaultTarget();
+                                } else {
+                                    defaultTarget = ((LookupSwitchStmt) u).getDefaultTarget();
+                                }
+                                for (Unit s : succs) {
+                                    if (!uid.containsKey(s)) continue;
+                                    hasAnyOut = true;
+                                    String et = s.equals(defaultTarget) ? "CFG_SWITCH_DEFAULT" : "CFG_SWITCH_CASE";
+                                    writeSemanticEdge(w, className, methodId, u, s, et, uid);
                                 }
                             } else {
                                 for (Unit s : succs) {
-                                    Integer tid = uid.get(s);
-                                    if (tid == null) continue;
+                                    if (!uid.containsKey(s)) continue;
                                     hasAnyOut = true;
-                                    w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + tid + "\tCFG_NEXT\n");
+                                    String et = isBackEdge(u, s, uid) ? "CFG_BACK" : "CFG_NEXT";
+                                    writeEdge(w, className, methodId, src, uid.get(s), et);
                                 }
                             }
 
@@ -142,14 +298,14 @@ public class soot_cfg_extractor {
                                 Integer tid = uid.get(s);
                                 if (tid == null) continue;
                                 hasAnyOut = true;
-                                w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + tid + "\tCFG_EXCEPTION\n");
+                                writeEdge(w, className, methodId, src, tid, "CFG_EXCEPTION");
                             }
 
                             if (!hasAnyOut && !(u instanceof ThrowStmt)) {
-                                w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + exit + "\tCFG_NEXT\n");
+                                writeEdge(w, className, methodId, src, exit, "CFG_NEXT");
                             }
                             if (u instanceof ThrowStmt) {
-                                w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + exit + "\tCFG_EXCEPTION\n");
+                                writeEdge(w, className, methodId, src, exit, "CFG_EXCEPTION");
                             }
                         }
                     }
