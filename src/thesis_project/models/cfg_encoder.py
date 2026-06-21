@@ -3,8 +3,10 @@
 The encoder consumes the CFG tensor contract produced by
 `scripts/extract_promise_cfg.py`:
 
-- x: compact statement-level node features with shape [num_nodes, 3]
+- x: numeric statement/control-flow features with shape [num_nodes, 25]
 - node_type_id: CFG node type ids with shape [num_nodes]
+- stmt_kind_id: Jimple statement kind ids with shape [num_nodes]
+- invoke_kind_id: invocation dispatch kind ids with shape [num_nodes]
 - edge_index: directed CFG edges with shape [2, num_edges]
 - edge_type: CFG edge type ids with shape [num_edges]
 - batch: graph assignment vector with shape [num_nodes]
@@ -24,28 +26,36 @@ from torch_geometric.nn import GATv2Conv
 
 from thesis_project.models.ast_encoder import AttentionPooling
 
+CFG_NUMERIC_FEATURE_DIM = 25
+CFG_UNIT_INTERVAL_FEATURE_INDICES = [0, 21, 22, 23, 24]
+CFG_BINARY_FEATURE_INDICES = list(range(1, 16)) + [18, 19, 20, 23, 24]
+CFG_NON_NEGATIVE_FEATURE_INDICES = [16, 17]
+
 
 def normalize_cfg_structural_features(x: Tensor) -> Tensor:
-    """Clamp CFG structural node features to their expected ranges.
+    """Clamp CFG numeric node features to their expected ranges.
 
-    The CFG extractor stores:
+    The current CFG extractor stores 25 numeric features:
 
-    - normalized source-line position in the file
-    - has_source_line flag
-    - is_synthetic flag
+    - source-position features
+    - instruction flags
+    - CFG structural-role features
 
-    These features are already bounded by construction. This transform keeps the
-    model robust to accidental numeric drift while preserving their meaning.
+    Most are already bounded by construction. This transform keeps the model
+    robust to accidental numeric drift while preserving logged degree features.
     """
-    if x.dim() != 2 or x.size(-1) != 3:
-        raise ValueError(f"Expected x with shape [num_nodes, 3], received {tuple(x.shape)}")
+    if x.dim() != 2 or x.size(-1) != CFG_NUMERIC_FEATURE_DIM:
+        raise ValueError(f"Expected x with shape [num_nodes, {CFG_NUMERIC_FEATURE_DIM}], received {tuple(x.shape)}")
     if x.size(0) == 0:
         return x.float()
 
     normalized = x.float().clone()
-    normalized[:, 0] = torch.clamp(normalized[:, 0], min=0.0, max=1.0)
-    normalized[:, 1] = torch.clamp(normalized[:, 1], min=0.0, max=1.0)
-    normalized[:, 2] = torch.clamp(normalized[:, 2], min=0.0, max=1.0)
+    for index in CFG_UNIT_INTERVAL_FEATURE_INDICES:
+        normalized[:, index] = torch.clamp(normalized[:, index], min=0.0, max=1.0)
+    for index in CFG_BINARY_FEATURE_INDICES:
+        normalized[:, index] = torch.clamp(normalized[:, index], min=0.0, max=1.0)
+    for index in CFG_NON_NEGATIVE_FEATURE_INDICES:
+        normalized[:, index] = torch.clamp(normalized[:, index], min=0.0)
     return normalized
 
 
@@ -54,9 +64,13 @@ class CFGEncoderConfig:
     """Configuration for :class:`CFGEdgeAwareGATEncoder`."""
 
     num_node_types: int
+    num_stmt_kinds: int
+    num_invoke_kinds: int
     num_edge_types: int
-    structural_feature_dim: int = 3
+    structural_feature_dim: int = CFG_NUMERIC_FEATURE_DIM
     node_type_embedding_dim: int = 32
+    stmt_kind_embedding_dim: int = 16
+    invoke_kind_embedding_dim: int = 8
     edge_type_embedding_dim: int = 16
     hidden_dim: int = 128
     output_dim: int = 128
@@ -70,12 +84,20 @@ class CFGEncoderConfig:
     def __post_init__(self) -> None:
         if self.num_node_types <= 0:
             raise ValueError("num_node_types must be positive")
+        if self.num_stmt_kinds <= 0:
+            raise ValueError("num_stmt_kinds must be positive")
+        if self.num_invoke_kinds <= 0:
+            raise ValueError("num_invoke_kinds must be positive")
         if self.num_edge_types <= 0:
             raise ValueError("num_edge_types must be positive")
         if self.structural_feature_dim <= 0:
             raise ValueError("structural_feature_dim must be positive")
         if self.node_type_embedding_dim <= 0:
             raise ValueError("node_type_embedding_dim must be positive")
+        if self.stmt_kind_embedding_dim <= 0:
+            raise ValueError("stmt_kind_embedding_dim must be positive")
+        if self.invoke_kind_embedding_dim <= 0:
+            raise ValueError("invoke_kind_embedding_dim must be positive")
         if self.edge_type_embedding_dim <= 0:
             raise ValueError("edge_type_embedding_dim must be positive")
         if self.hidden_dim <= 0:
@@ -97,10 +119,11 @@ class CFGEncoderConfig:
 class CFGEdgeAwareGATEncoder(nn.Module):
     """Relational/edge-aware GAT encoder for CFG graphs.
 
-    Node syntax is represented by trainable CFG node-type embeddings and compact
-    structural features. Control-flow behavior is represented by trainable
+    Node semantics are represented by trainable embeddings for the broad CFG node
+    type, Jimple statement kind, and invocation kind, plus numeric instruction
+    and CFG-role features. Control-flow behavior is represented by trainable
     edge-type embeddings that are used inside GATv2 attention, allowing edges
-    such as `CFG_TRUE`, `CFG_FALSE`, `CFG_RETURN`, and `CFG_EXCEPTION` to receive
+    such as `CFG_TRUE`, `CFG_FALSE`, `CFG_BACK`, and `CFG_EXCEPTION` to receive
     different learned importance.
     """
 
@@ -108,9 +131,16 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.node_type_embedding = nn.Embedding(config.num_node_types, config.node_type_embedding_dim)
+        self.stmt_kind_embedding = nn.Embedding(config.num_stmt_kinds, config.stmt_kind_embedding_dim)
+        self.invoke_kind_embedding = nn.Embedding(config.num_invoke_kinds, config.invoke_kind_embedding_dim)
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
 
-        input_dim = config.node_type_embedding_dim + config.structural_feature_dim
+        input_dim = (
+            config.node_type_embedding_dim
+            + config.stmt_kind_embedding_dim
+            + config.invoke_kind_embedding_dim
+            + config.structural_feature_dim
+        )
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, config.hidden_dim),
             nn.ReLU(),
@@ -148,8 +178,8 @@ class CFGEdgeAwareGATEncoder(nn.Module):
     def output_dim(self) -> int:
         return self.config.output_dim
 
-    def build_node_input(self, x: Tensor, node_type_id: Tensor) -> Tensor:
-        """Concatenate trainable node-type embeddings with CFG node features."""
+    def build_node_input(self, x: Tensor, node_type_id: Tensor, stmt_kind_id: Tensor, invoke_kind_id: Tensor) -> Tensor:
+        """Concatenate categorical embeddings with numeric CFG node features."""
         if x.dim() != 2:
             raise ValueError(f"x must have shape [num_nodes, num_features], received {tuple(x.shape)}")
         if x.size(-1) != self.config.structural_feature_dim:
@@ -161,9 +191,19 @@ class CFGEdgeAwareGATEncoder(nn.Module):
             raise ValueError(f"node_type_id must have shape [num_nodes], received {tuple(node_type_id.shape)}")
         if node_type_id.size(0) != x.size(0):
             raise ValueError("x and node_type_id must describe the same number of nodes")
+        if stmt_kind_id.dim() != 1:
+            raise ValueError(f"stmt_kind_id must have shape [num_nodes], received {tuple(stmt_kind_id.shape)}")
+        if stmt_kind_id.size(0) != x.size(0):
+            raise ValueError("x and stmt_kind_id must describe the same number of nodes")
+        if invoke_kind_id.dim() != 1:
+            raise ValueError(f"invoke_kind_id must have shape [num_nodes], received {tuple(invoke_kind_id.shape)}")
+        if invoke_kind_id.size(0) != x.size(0):
+            raise ValueError("x and invoke_kind_id must describe the same number of nodes")
 
         type_embedding = self.node_type_embedding(node_type_id.long())
-        return torch.cat([type_embedding, x.float()], dim=-1)
+        stmt_embedding = self.stmt_kind_embedding(stmt_kind_id.long())
+        invoke_embedding = self.invoke_kind_embedding(invoke_kind_id.long())
+        return torch.cat([type_embedding, stmt_embedding, invoke_embedding, x.float()], dim=-1)
 
     def build_edge_attr(self, edge_type: Tensor, num_edges: int) -> Tensor:
         """Return trainable edge-type embeddings used by GAT attention."""
@@ -177,6 +217,8 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         self,
         x: Tensor,
         node_type_id: Tensor,
+        stmt_kind_id: Tensor,
+        invoke_kind_id: Tensor,
         edge_index: Tensor,
         edge_type: Tensor,
         return_edge_attention: bool = False,
@@ -187,7 +229,7 @@ class CFGEdgeAwareGATEncoder(nn.Module):
 
         edge_index = edge_index.long()
         edge_attr = self.build_edge_attr(edge_type, edge_index.size(1))
-        h = self.input_projection(self.build_node_input(x, node_type_id))
+        h = self.input_projection(self.build_node_input(x, node_type_id, stmt_kind_id, invoke_kind_id))
 
         attention_info: dict[str, Tensor] = {}
         for layer_idx, (conv, norm) in enumerate(zip(self.convs, self.norms, strict=True)):
@@ -218,6 +260,8 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         self,
         x: Tensor,
         node_type_id: Tensor,
+        stmt_kind_id: Tensor,
+        invoke_kind_id: Tensor,
         edge_index: Tensor,
         edge_type: Tensor,
         batch: Tensor | None = None,
@@ -226,8 +270,10 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         """Encode a batch of CFG graphs.
 
         Args:
-            x: CFG node features, shape [num_nodes, 3].
+            x: Numeric CFG node features, shape [num_nodes, 25].
             node_type_id: CFG node type ids, shape [num_nodes].
+            stmt_kind_id: Jimple statement kind ids, shape [num_nodes].
+            invoke_kind_id: invocation kind ids, shape [num_nodes].
             edge_index: Directed CFG connectivity, shape [2, num_edges].
             edge_type: CFG edge type ids, shape [num_edges].
             batch: Graph id for each node. If omitted, all nodes are treated as
@@ -244,6 +290,8 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         encoded = self.encode_nodes(
             x=x,
             node_type_id=node_type_id,
+            stmt_kind_id=stmt_kind_id,
+            invoke_kind_id=invoke_kind_id,
             edge_index=edge_index,
             edge_type=edge_type,
             return_edge_attention=return_attention,
@@ -279,6 +327,8 @@ class CFGGraphClassifier(nn.Module):
         self,
         x: Tensor,
         node_type_id: Tensor,
+        stmt_kind_id: Tensor,
+        invoke_kind_id: Tensor,
         edge_index: Tensor,
         edge_type: Tensor,
         batch: Tensor | None = None,
@@ -287,6 +337,8 @@ class CFGGraphClassifier(nn.Module):
         return self.encoder(
             x=x,
             node_type_id=node_type_id,
+            stmt_kind_id=stmt_kind_id,
+            invoke_kind_id=invoke_kind_id,
             edge_index=edge_index,
             edge_type=edge_type,
             batch=batch,
@@ -296,6 +348,8 @@ class CFGGraphClassifier(nn.Module):
         self,
         x: Tensor,
         node_type_id: Tensor,
+        stmt_kind_id: Tensor,
+        invoke_kind_id: Tensor,
         edge_index: Tensor,
         edge_type: Tensor,
         batch: Tensor | None = None,
@@ -304,6 +358,8 @@ class CFGGraphClassifier(nn.Module):
         embeddings = self.encode(
             x=x,
             node_type_id=node_type_id,
+            stmt_kind_id=stmt_kind_id,
+            invoke_kind_id=invoke_kind_id,
             edge_index=edge_index,
             edge_type=edge_type,
             batch=batch,

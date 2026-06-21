@@ -49,7 +49,33 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only in missi
         f"Original error: {exc}"
     ) from exc
 
-STRUCTURAL_FEATURE_NAMES = ["line_position", "has_source_line", "is_synthetic"]
+DEFAULT_FEATURE_NAMES = [
+    "line_position",
+    "has_source_line",
+    "is_synthetic",
+    "has_method_call",
+    "has_field_read",
+    "has_field_write",
+    "has_array_read",
+    "has_array_write",
+    "has_new_object",
+    "has_new_array",
+    "has_cast",
+    "has_arithmetic_op",
+    "has_comparison_op",
+    "has_null_constant",
+    "has_string_constant",
+    "has_numeric_constant",
+    "in_degree_log",
+    "out_degree_log",
+    "is_branch_node",
+    "is_join_node",
+    "is_terminal_node",
+    "node_position_in_method",
+    "method_size_normalized",
+    "is_loop_header",
+    "is_in_loop",
+]
 
 
 class CFGGraphDataset:
@@ -78,12 +104,16 @@ class CFGGraphDataset:
         if self.normalize_structural_features:
             x = normalize_cfg_structural_features(x)
         node_type_id = torch.from_numpy(np.load(row["node_type_id_npy"])).long()
+        stmt_kind_id = torch.from_numpy(np.load(row["stmt_kind_id_npy"])).long()
+        invoke_kind_id = torch.from_numpy(np.load(row["invoke_kind_id_npy"])).long()
         edge_index = torch.from_numpy(np.load(row["edge_index_npy"])).long()
         edge_type = torch.from_numpy(np.load(row["edge_type_npy"])).long()
         y = torch.tensor([float(row["label"])], dtype=torch.float32)
         return Data(
             x=x,
             node_type_id=node_type_id,
+            stmt_kind_id=stmt_kind_id,
+            invoke_kind_id=invoke_kind_id,
             edge_index=edge_index,
             edge_type=edge_type,
             y=y,
@@ -95,7 +125,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LOPO CFG edge-aware GAT evaluation without placeholder CFGs.")
     parser.add_argument("--graph-index", type=Path, default=Path("outputs/promise/cfg/graph_index.csv"))
     parser.add_argument("--node-type-vocab", type=Path, default=Path("outputs/promise/cfg/node_type_vocab.json"))
+    parser.add_argument("--stmt-kind-vocab", type=Path, default=Path("outputs/promise/cfg/stmt_kind_vocab.json"))
+    parser.add_argument("--invoke-kind-vocab", type=Path, default=Path("outputs/promise/cfg/invoke_kind_vocab.json"))
     parser.add_argument("--edge-type-vocab", type=Path, default=Path("outputs/promise/cfg/edge_type_vocab.json"))
+    parser.add_argument("--feature-names", type=Path, default=Path("outputs/promise/cfg/feature_names.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/embeddings/cfg_lopo"))
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -109,6 +142,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-layers", type=int, default=3)
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--node-type-embedding-dim", type=int, default=32)
+    parser.add_argument("--stmt-kind-embedding-dim", type=int, default=16)
+    parser.add_argument("--invoke-kind-embedding-dim", type=int, default=8)
     parser.add_argument("--edge-type-embedding-dim", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--attention-dropout", type=float, default=0.2)
@@ -163,11 +198,23 @@ def load_vocab(path: Path, label: str) -> dict[str, int]:
     return {str(key): int(value) for key, value in vocab.items()}
 
 
+def load_feature_names(path: Path) -> list[str]:
+    if not path.exists():
+        return DEFAULT_FEATURE_NAMES
+    feature_names = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(feature_names, list) or not all(isinstance(item, str) for item in feature_names):
+        raise ValueError(f"Invalid CFG feature name file: {path}")
+    return feature_names
+
+
 def load_inputs(
     graph_index_path: Path,
     node_vocab_path: Path,
+    stmt_vocab_path: Path,
+    invoke_vocab_path: Path,
     edge_vocab_path: Path,
-) -> tuple[pd.DataFrame, dict[str, int], dict[str, int], dict[str, int]]:
+    feature_names_path: Path,
+) -> tuple[pd.DataFrame, dict[str, int], dict[str, int], dict[str, int], dict[str, int], list[str], dict[str, int]]:
     if not graph_index_path.exists():
         raise FileNotFoundError(f"Missing CFG graph index: {graph_index_path}. Run scripts/extract_promise_cfg.py first.")
 
@@ -181,6 +228,8 @@ def load_inputs(
         "extraction_mode",
         "x_npy",
         "node_type_id_npy",
+        "stmt_kind_id_npy",
+        "invoke_kind_id_npy",
         "edge_index_npy",
         "edge_type_npy",
     }
@@ -198,16 +247,31 @@ def load_inputs(
         raise ValueError(f"CFG labels must be binary, found: {sorted(labels)}")
 
     node_vocab = load_vocab(node_vocab_path, "node-type")
+    stmt_vocab = load_vocab(stmt_vocab_path, "statement-kind")
+    invoke_vocab = load_vocab(invoke_vocab_path, "invocation-kind")
     edge_vocab = load_vocab(edge_vocab_path, "edge-type")
-    return graph_index.reset_index(drop=True), node_vocab, edge_vocab, original_modes
+    feature_names = load_feature_names(feature_names_path)
+    return graph_index.reset_index(drop=True), node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, original_modes
 
 
-def build_model(args: argparse.Namespace, node_vocab: dict[str, int], edge_vocab: dict[str, int], device: torch.device) -> tuple[CFGGraphClassifier, CFGEncoderConfig]:
+def build_model(
+    args: argparse.Namespace,
+    node_vocab: dict[str, int],
+    stmt_vocab: dict[str, int],
+    invoke_vocab: dict[str, int],
+    edge_vocab: dict[str, int],
+    feature_names: list[str],
+    device: torch.device,
+) -> tuple[CFGGraphClassifier, CFGEncoderConfig]:
     config = CFGEncoderConfig(
         num_node_types=len(node_vocab),
+        num_stmt_kinds=len(stmt_vocab),
+        num_invoke_kinds=len(invoke_vocab),
         num_edge_types=len(edge_vocab),
-        structural_feature_dim=3,
+        structural_feature_dim=len(feature_names),
         node_type_embedding_dim=args.node_type_embedding_dim,
+        stmt_kind_embedding_dim=args.stmt_kind_embedding_dim,
+        invoke_kind_embedding_dim=args.invoke_kind_embedding_dim,
         edge_type_embedding_dim=args.edge_type_embedding_dim,
         hidden_dim=args.hidden_dim,
         output_dim=args.output_dim,
@@ -306,7 +370,15 @@ def run_epoch(
         targets = batch.y.float().view(-1)
         if is_training:
             optimizer.zero_grad(set_to_none=True)
-        logits = model(batch.x, batch.node_type_id, batch.edge_index, batch.edge_type, batch.batch)
+        logits = model(
+            batch.x,
+            batch.node_type_id,
+            batch.stmt_kind_id,
+            batch.invoke_kind_id,
+            batch.edge_index,
+            batch.edge_type,
+            batch.batch,
+        )
         loss = loss_fn(logits, targets)
         if is_training:
             loss.backward()
@@ -406,7 +478,15 @@ def evaluate_model(
         for batch in loader:
             batch = move_batch(batch, device)
             targets = batch.y.float().view(-1)
-            logits = model(batch.x, batch.node_type_id, batch.edge_index, batch.edge_type, batch.batch)
+            logits = model(
+                batch.x,
+                batch.node_type_id,
+                batch.stmt_kind_id,
+                batch.invoke_kind_id,
+                batch.edge_index,
+                batch.edge_type,
+                batch.batch,
+            )
             loss = loss_fn(logits, targets)
             batch_size = int(targets.numel())
             total_loss += float(loss.item()) * batch_size
@@ -434,7 +514,15 @@ def extract_test_embeddings(
     with torch.no_grad():
         for batch in loader:
             batch = move_batch(batch, device)
-            embeddings = model.encode(batch.x, batch.node_type_id, batch.edge_index, batch.edge_type, batch.batch)
+            embeddings = model.encode(
+                batch.x,
+                batch.node_type_id,
+                batch.stmt_kind_id,
+                batch.invoke_kind_id,
+                batch.edge_index,
+                batch.edge_type,
+                batch.batch,
+            )
             rows.append(batch.row_idx.view(-1).detach().cpu().numpy().astype(int))
             vectors.append(embeddings.detach().cpu().numpy().astype(np.float32))
     if not rows:
@@ -508,7 +596,10 @@ def run_lopo(
     device: torch.device,
     graph_index: pd.DataFrame,
     node_vocab: dict[str, int],
+    stmt_vocab: dict[str, int],
+    invoke_vocab: dict[str, int],
     edge_vocab: dict[str, int],
+    feature_names: list[str],
     original_modes: dict[str, int],
     output_dir: Path,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
@@ -519,6 +610,7 @@ def run_lopo(
 
     fold_rows: list[dict[str, Any]] = []
     prediction_frames: list[pd.DataFrame] = []
+    all_embeddings = np.zeros((len(graph_index), args.output_dim), dtype=np.float32)
     projects = sorted(graph_index["dataset_name"].astype(str).unique())
 
     for fold_idx, test_project in enumerate(projects):
@@ -534,7 +626,7 @@ def run_lopo(
         val_loader = make_loader(val_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers) if len(val_indices) else None
         test_loader = make_loader(test_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-        model, encoder_config = build_model(args, node_vocab, edge_vocab, device)
+        model, encoder_config = build_model(args, node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, device)
         best_state, history, best_info = train_model(
             model=model,
             train_loader=train_loader,
@@ -554,6 +646,7 @@ def run_lopo(
         )
         majority_label, base_metrics = baseline_metrics(labels[train_indices], targets)
         embedding_rows, test_embeddings = extract_test_embeddings(model, test_loader, device, args.output_dim)
+        all_embeddings[embedding_rows] = test_embeddings
 
         fold_dir = folds_dir / str(test_project)
         fold_dir.mkdir(parents=True, exist_ok=True)
@@ -564,7 +657,10 @@ def run_lopo(
                 "model_state_dict": model.cpu().state_dict(),
                 "encoder_config": asdict(encoder_config),
                 "node_type_vocab": node_vocab,
+                "stmt_kind_vocab": stmt_vocab,
+                "invoke_kind_vocab": invoke_vocab,
                 "edge_type_vocab": edge_vocab,
+                "feature_names": feature_names,
                 "best_info": best_info,
                 "protocol": "LOPO",
                 "placeholder_policy": "excluded",
@@ -630,28 +726,47 @@ def run_lopo(
     fold_metrics = pd.DataFrame(fold_rows)
     all_predictions = pd.concat(prediction_frames, ignore_index=True)
     aggregate = aggregate_results(graph_index, fold_metrics, all_predictions, original_modes)
+    embeddings_path = output_dir / "cfg_embeddings.npy"
+    embedding_index_path = output_dir / "cfg_embedding_index.csv"
+    embedding_summary_path = output_dir / "cfg_embedding_summary.json"
+    np.save(embeddings_path, all_embeddings)
+    embedding_index = graph_index[
+        ["graph_id", "dataset_name", "name", "source_path", "label", "extraction_mode", "num_nodes", "num_edges", "num_methods"]
+    ].copy()
+    embedding_index.insert(0, "embedding_row", np.arange(len(embedding_index), dtype=np.int64))
+    embedding_index["embedding_npy"] = str(embeddings_path)
+    embedding_index.to_csv(embedding_index_path, index=False)
     aggregate.update(
         {
             "graph_index": str(resolve_path(args.graph_index)),
             "output_dir": str(output_dir),
-            "structural_feature_names": STRUCTURAL_FEATURE_NAMES,
+            "embeddings_npy": str(embeddings_path),
+            "embedding_index_csv": str(embedding_index_path),
+            "embedding_dim": int(args.output_dim),
+            "embedding_protocol": (
+                "Each row is encoded by the LOPO fold where the file's project is held out; "
+                "placeholder CFG graphs are excluded."
+            ),
+            "structural_feature_names": feature_names,
             "structural_feature_transform": {
                 "enabled": not args.no_normalize_structural_features,
-                "line_position": "clamped to [0, 1]",
-                "has_source_line": "binary flag clamped to [0, 1]",
-                "is_synthetic": "binary flag clamped to [0, 1]",
+                "numeric_features": "bounded features clamped to expected ranges; log-degree features clamped non-negative",
             },
+            "node_type_vocab": node_vocab,
+            "stmt_kind_vocab": stmt_vocab,
+            "invoke_kind_vocab": invoke_vocab,
             "edge_type_handling": {
                 "method": "trainable edge-type embeddings passed to GATv2 attention",
                 "edge_types": edge_vocab,
                 "add_self_loops": False,
             },
-            "encoder_config": asdict(build_model(args, node_vocab, edge_vocab, torch.device("cpu"))[1]),
+            "encoder_config": asdict(build_model(args, node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, torch.device("cpu"))[1]),
         }
     )
     fold_metrics.to_csv(output_dir / "fold_metrics.csv", index=False)
     all_predictions.to_csv(output_dir / "all_test_predictions.csv", index=False)
     (output_dir / "aggregate_metrics.json").write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
+    embedding_summary_path.write_text(json.dumps(aggregate, indent=2), encoding="utf-8")
     return fold_metrics, aggregate
 
 
@@ -665,10 +780,13 @@ def main() -> None:
     output_dir = resolve_path(args.output_dir)
     prepare_output_dir(output_dir, clean=not args.no_clean)
     device = choose_device(args.device)
-    graph_index, node_vocab, edge_vocab, original_modes = load_inputs(
+    graph_index, node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, original_modes = load_inputs(
         graph_index_path=resolve_path(args.graph_index),
         node_vocab_path=resolve_path(args.node_type_vocab),
+        stmt_vocab_path=resolve_path(args.stmt_kind_vocab),
+        invoke_vocab_path=resolve_path(args.invoke_kind_vocab),
         edge_vocab_path=resolve_path(args.edge_type_vocab),
+        feature_names_path=resolve_path(args.feature_names),
     )
 
     print(
@@ -682,11 +800,15 @@ def main() -> None:
         device=device,
         graph_index=graph_index,
         node_vocab=node_vocab,
+        stmt_vocab=stmt_vocab,
+        invoke_vocab=invoke_vocab,
         edge_vocab=edge_vocab,
+        feature_names=feature_names,
         original_modes=original_modes,
         output_dir=output_dir,
     )
     print(f"fold_metrics={output_dir / 'fold_metrics.csv'}", flush=True)
+    print(f"embeddings={output_dir / 'cfg_embeddings.npy'}", flush=True)
     print("CFG LOPO evaluation finished.", flush=True)
 
 
