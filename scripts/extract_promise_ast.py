@@ -2,7 +2,7 @@
 """Extract filtered AST graphs for multi-project PROMISE Java SDP datasets.
 
 Default input:
-    outputs/promise/promise_preprocessed_standard.csv
+    outputs/promise/promise_preprocessed_log1p.csv
 
 Default output:
     outputs/promise/ast/
@@ -516,7 +516,7 @@ def build_report(summary: dict[str, Any], graph_rows: list[dict[str, Any]], top_
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract AST graphs for PROMISE Java SDP datasets.")
-    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_standard.csv"))
+    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_log1p.csv"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/ast"))
     parser.add_argument("--dataset-name", help="Optional dataset filter, e.g. ant-1.6")
     parser.add_argument("--no-clean", action="store_true", help="Do not clear existing graph/tensor files before extraction.")

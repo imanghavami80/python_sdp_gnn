@@ -6,7 +6,7 @@ The pipeline preserves the original Log4j preprocessing choices:
 2. convert defect counts to a binary classification label,
 3. median-impute numeric metrics,
 4. apply log1p to metric columns,
-5. scale metric columns,
+5. optionally scale metric columns for standalone analysis,
 6. map each class name to a Java source file,
 7. write per-project outputs and one combined SDP CSV.
 
@@ -83,9 +83,9 @@ def infer_path_fqcn(java_path: Path, source_root: Path) -> str:
     return ".".join(java_path.relative_to(source_root).with_suffix("").parts)
 
 
-def build_source_index(source_root: Path) -> tuple[dict[str, Path], dict[str, list[Path]]]:
+def build_source_index(source_root: Path) -> tuple[dict[str, list[Path]], dict[str, list[Path]]]:
     """Index Java files by package-derived FQCN and simple class name."""
-    fqcn_to_path: dict[str, Path] = {}
+    fqcn_to_paths: dict[str, list[Path]] = {}
     simple_to_paths: dict[str, list[Path]] = {}
 
     for java_path in sorted(source_root.rglob("*.java")):
@@ -93,32 +93,46 @@ def build_source_index(source_root: Path) -> tuple[dict[str, Path], dict[str, li
         package_fqcn = f"{package}.{java_path.stem}" if package else java_path.stem
         path_fqcn = infer_path_fqcn(java_path, source_root)
 
-        fqcn_to_path.setdefault(package_fqcn, java_path.resolve())
-        fqcn_to_path.setdefault(path_fqcn, java_path.resolve())
-        simple_to_paths.setdefault(java_path.stem, []).append(java_path.resolve())
+        resolved = java_path.resolve()
+        for fqcn in {package_fqcn, path_fqcn}:
+            candidates = fqcn_to_paths.setdefault(fqcn, [])
+            if resolved not in candidates:
+                candidates.append(resolved)
+        simple_to_paths.setdefault(java_path.stem, []).append(resolved)
 
-    return fqcn_to_path, simple_to_paths
+    return fqcn_to_paths, simple_to_paths
 
 
 def map_class_to_file(
     class_name: str,
-    fqcn_to_path: dict[str, Path],
+    fqcn_to_paths: dict[str, list[Path]],
     simple_to_paths: dict[str, list[Path]],
 ) -> tuple[str | None, str]:
     """Resolve PROMISE class name to a Java source file path."""
     normalized = str(class_name).replace("$", ".")
-    exact = fqcn_to_path.get(normalized)
-    if exact is not None:
-        return str(exact), "exact_fqcn"
+    exact = fqcn_to_paths.get(normalized, [])
+    if len(exact) == 1:
+        return str(exact[0]), "exact_fqcn"
+    if len(exact) > 1:
+        return None, "ambiguous_fqcn"
 
     # Inner/nested classes are stored in the outer class source file.
     owner = normalized
     while "." in owner:
         owner = owner.rsplit(".", 1)[0]
-        if owner in fqcn_to_path:
-            return str(fqcn_to_path[owner]), "outer_class"
+        owner_candidates = fqcn_to_paths.get(owner, [])
+        if len(owner_candidates) == 1:
+            return str(owner_candidates[0]), "outer_class"
+        if len(owner_candidates) > 1:
+            return None, "ambiguous_fqcn"
 
-    simple_name = normalized.split(".")[-1]
+    # A simple-name fallback is only defensible for an unqualified dataset
+    # class. Falling back from a packaged FQCN can silently map a renamed or
+    # unrelated class from another package to the wrong source file.
+    if "." in normalized:
+        return None, "not_found"
+
+    simple_name = normalized
     candidates = simple_to_paths.get(simple_name, [])
     if len(candidates) == 1:
         return str(candidates[0]), "unique_simple_name"
@@ -131,6 +145,11 @@ def validate_project_frame(dataset_name: str, df: pd.DataFrame) -> None:
     missing = [column for column in EXPECTED_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"{dataset_name}: missing expected columns: {missing}")
+    if df["name"].isna().any() or (df["name"].astype(str).str.strip() == "").any():
+        raise ValueError(f"{dataset_name}: class names must be non-empty")
+    duplicates = df.loc[df["name"].astype(str).duplicated(keep=False), "name"].astype(str).unique().tolist()
+    if duplicates:
+        raise ValueError(f"{dataset_name}: duplicate class names are unsupported: {duplicates[:10]}")
 
 
 def discover_projects(projects_root: Path) -> list[ProjectSpec]:
@@ -184,7 +203,13 @@ def preprocess_frames(
     scaler_name: str,
     scale_scope: str,
 ) -> list[PreprocessResult]:
-    """Preprocess all frames with either global or per-project scaling."""
+    """Log-transform metrics and optionally apply exploratory scaling.
+
+    The default ``none`` mode deliberately defers all fitted transformations to
+    the nested LOPO evaluator. Global or per-project scaling is retained only
+    for standalone descriptive experiments, where cross-project test leakage is
+    not being estimated.
+    """
     if scale_scope not in {"global", "project"}:
         raise ValueError("scale_scope must be 'global' or 'project'")
 
@@ -196,7 +221,22 @@ def preprocess_frames(
             df[column] = pd.to_numeric(df[column], errors="coerce")
         work_frames.append(df)
 
-    if scale_scope == "global":
+    if scaler_name == "none":
+        scaled_by_project = []
+        for df in work_frames:
+            metrics = df[METRIC_COLUMNS].copy()
+            missing_counts = metrics.isna().sum()
+            if int(missing_counts.sum()) > 0:
+                missing = {column: int(count) for column, count in missing_counts.items() if count > 0}
+                raise ValueError(
+                    "Leakage-safe preprocessing does not globally impute metrics. "
+                    f"Missing values must be handled inside each model fold: {missing}"
+                )
+            if (metrics < 0).any().any():
+                raise ValueError("log1p transformation requires non-negative metric features")
+            scaled_by_project.append(pd.DataFrame(np.log1p(metrics), columns=METRIC_COLUMNS))
+        effective_scale_scope = "deferred_to_nested_lopo"
+    elif scale_scope == "global":
         combined_metrics = pd.concat([df[METRIC_COLUMNS] for df in work_frames], ignore_index=True)
         medians = combined_metrics.median(numeric_only=True)
         processed_metrics = combined_metrics.fillna(medians)
@@ -212,6 +252,7 @@ def preprocess_frames(
             n_rows = len(df)
             scaled_by_project.append(scaled_all.iloc[offset : offset + n_rows].reset_index(drop=True))
             offset += n_rows
+        effective_scale_scope = scale_scope
     else:
         scaled_by_project = []
         for df in work_frames:
@@ -222,6 +263,7 @@ def preprocess_frames(
             metrics = np.log1p(metrics)
             scaler = make_scaler(scaler_name)
             scaled_by_project.append(pd.DataFrame(scaler.fit_transform(metrics), columns=METRIC_COLUMNS))
+        effective_scale_scope = scale_scope
 
     results: list[PreprocessResult] = []
     for spec, df, scaled_metrics in zip(specs, work_frames, scaled_by_project):
@@ -235,10 +277,10 @@ def preprocess_frames(
         for column in METRIC_COLUMNS:
             scaled_df[column] = scaled_metrics[column].astype(float)
 
-        fqcn_to_path, simple_to_paths = build_source_index(spec.source_root)
+        fqcn_to_paths, simple_to_paths = build_source_index(spec.source_root)
         mapping_rows = []
         for class_name in scaled_df["name"]:
-            source_path, match_strategy = map_class_to_file(class_name, fqcn_to_path, simple_to_paths)
+            source_path, match_strategy = map_class_to_file(class_name, fqcn_to_paths, simple_to_paths)
             mapping_rows.append(
                 {
                     "dataset_name": spec.dataset_name,
@@ -261,7 +303,7 @@ def preprocess_frames(
             "feature_columns": len(METRIC_COLUMNS),
             "feature_transform": "log1p",
             "scaler": scaler_name,
-            "scale_scope": scale_scope,
+            "scale_scope": effective_scale_scope,
             "bug_label_counts": {str(k): int(v) for k, v in bug_label_counts.items()},
             "mapped_classes": int(mapping_df["source_path"].notna().sum()),
             "total_classes": int(len(mapping_df)),
@@ -272,18 +314,19 @@ def preprocess_frames(
     return results
 
 
-def write_outputs(results: list[PreprocessResult], output_root: Path, scaler_name: str, scale_scope: str) -> None:
+def write_outputs(results: list[PreprocessResult], output_root: Path, scaler_name: str) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     combined_dir = output_root / "promise"
     combined_dir.mkdir(parents=True, exist_ok=True)
 
+    output_suffix = "log1p" if scaler_name == "none" else scaler_name
     combined_frames = []
     summary_rows = []
     for result in results:
         dataset_dir = output_root / result.dataset_name
         dataset_dir.mkdir(parents=True, exist_ok=True)
 
-        preprocessed_path = dataset_dir / f"{result.dataset_name}_preprocessed_{scaler_name}.csv"
+        preprocessed_path = dataset_dir / f"{result.dataset_name}_preprocessed_{output_suffix}.csv"
         mapping_path = dataset_dir / f"{result.dataset_name}_name_to_source_mapping.csv"
         mapping_json_path = dataset_dir / f"{result.dataset_name}_name_to_source_mapping.json"
         summary_path = dataset_dir / f"{result.dataset_name}_preprocess_summary.json"
@@ -308,7 +351,7 @@ def write_outputs(results: list[PreprocessResult], output_root: Path, scaler_nam
         summary_rows.append(result.summary)
 
     combined = pd.concat(combined_frames, ignore_index=True)
-    combined_path = combined_dir / f"promise_preprocessed_{scaler_name}.csv"
+    combined_path = combined_dir / f"promise_preprocessed_{output_suffix}.csv"
     combined_summary_path = combined_dir / "promise_preprocess_summary.json"
     combined.to_csv(combined_path, index=False)
 
@@ -320,7 +363,7 @@ def write_outputs(results: list[PreprocessResult], output_root: Path, scaler_nam
         "feature_columns": len(METRIC_COLUMNS),
         "feature_transform": "log1p",
         "scaler": scaler_name,
-        "scale_scope": scale_scope,
+        "scale_scope": results[0].summary["scale_scope"],
         "defective_samples": int(combined["bug"].sum()),
         "non_defective_samples": int((combined["bug"] == 0).sum()),
         "mapped_classes": int(combined["source_path"].notna().sum()),
@@ -342,7 +385,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preprocess PROMISE Java SDP datasets.")
     parser.add_argument("--projects-root", type=Path, default=Path("projects"))
     parser.add_argument("--output-root", type=Path, default=Path("outputs"))
-    parser.add_argument("--scaler", choices=["standard", "minmax"], default="standard")
+    parser.add_argument(
+        "--scaler",
+        choices=["none", "standard", "minmax"],
+        default="none",
+        help="Default 'none' defers fitted scaling to nested LOPO and writes log1p metrics.",
+    )
     parser.add_argument(
         "--scale-scope",
         choices=["global", "project"],
@@ -385,7 +433,7 @@ def main() -> None:
 
     raw_frames = load_raw_projects(specs)
     results = preprocess_frames(specs, raw_frames, scaler_name=args.scaler, scale_scope=args.scale_scope)
-    write_outputs(results, output_root=output_root, scaler_name=args.scaler, scale_scope=args.scale_scope)
+    write_outputs(results, output_root=output_root, scaler_name=args.scaler)
 
 
 if __name__ == "__main__":

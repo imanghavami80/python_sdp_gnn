@@ -1,6 +1,8 @@
-import pytest
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("torch_geometric")
@@ -13,7 +15,8 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 import pandas as pd
 
-from evaluate_ndg_nested_lopo import assert_outer_boundary, project_indices
+from evaluate_ndg_nested_lopo import assert_outer_boundary, choose_validation_project, project_indices
+from thesis_project.training import ProjectGraph, standardize_metrics
 
 
 def make_config() -> NDGEncoderConfig:
@@ -82,3 +85,38 @@ def test_outer_boundary_rejects_test_project_leakage() -> None:
     leaking_indices = project_indices(index, ["ant", "ivy"])
     with pytest.raises(AssertionError, match="Leakage guard failed"):
         assert_outer_boundary(index, leaking_indices, "ivy", "test stage")
+
+
+def test_validation_project_requires_both_classes() -> None:
+    projects = {
+        "balanced": SimpleNamespace(y=torch.tensor([0, 1] * 6).numpy()),
+        "mostly_positive": SimpleNamespace(y=torch.tensor([0] + [1] * 20).numpy()),
+        "other": SimpleNamespace(y=torch.tensor([0] * 7 + [1] * 5).numpy()),
+    }
+
+    selected = choose_validation_project(projects, list(projects), min_class_nodes=5)
+
+    assert selected in {"balanced", "other"}
+
+
+def test_metric_transform_is_fit_on_training_nodes_only() -> None:
+    def graph(values: list[list[float]]) -> ProjectGraph:
+        count = len(values)
+        return ProjectGraph(
+            dataset_name="sample",
+            names=[str(i) for i in range(count)],
+            source_paths=[str(i) for i in range(count)],
+            metrics_x=torch.tensor(values),
+            ast_x=torch.zeros(count, 1),
+            cfg_x=torch.zeros(count, 1),
+            view_mask=torch.ones(count, 3, dtype=torch.bool),
+            y=torch.zeros(count),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_type=torch.zeros(0, dtype=torch.long),
+        )
+
+    train, test = standardize_metrics(graph([[1.0], [3.0], [float("nan")]]), graph([[100.0]]))
+
+    assert torch.isfinite(train.metrics_x).all()
+    assert torch.allclose(train.metrics_x.mean(dim=0), torch.zeros(1), atol=1e-6)
+    assert test.metrics_x.item() > 50.0

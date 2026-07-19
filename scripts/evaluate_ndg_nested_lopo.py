@@ -36,7 +36,7 @@ try:
 
     import evaluate_cfg_lopo as cfg_pipeline
     import generate_ast_embeddings as ast_pipeline
-    from evaluate_ndg_lopo import (
+    from thesis_project.training import (
         ProjectGraph,
         add_inverse_relations,
         binary_metrics,
@@ -101,8 +101,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--include-ast-fallbacks",
+        action="store_true",
+        help="Use coarse fallback ASTs. By default they are masked as an unavailable AST view.",
+    )
     parser.add_argument("--test-project", action="append", default=[], help="Run only selected outer test projects.")
-    parser.add_argument("--no-clean", action="store_true")
     return parser.parse_args()
 
 
@@ -150,6 +154,28 @@ def assert_outer_boundary(index: pd.DataFrame, train_indices: np.ndarray, test_p
     used_projects = set(index.iloc[train_indices]["dataset_name"].astype(str))
     if test_project in used_projects:
         raise AssertionError(f"Leakage guard failed: {stage} training includes outer test project {test_project}")
+
+
+def choose_validation_project(
+    base_projects: dict[str, BaseNDGProject],
+    outer_train_projects: list[str],
+    min_class_nodes: int = 5,
+) -> str:
+    """Choose a representative inner project with usable binary validation."""
+    all_labels = np.concatenate([base_projects[name].y for name in outer_train_projects]).astype(np.int64)
+    target_rate = float(all_labels.mean())
+    candidates: list[tuple[float, str]] = []
+    for name in outer_train_projects:
+        labels = base_projects[name].y.astype(np.int64)
+        counts = np.bincount(labels, minlength=2)
+        if int(counts.min()) < min_class_nodes:
+            continue
+        candidates.append((abs(float(labels.mean()) - target_rate), name))
+    if not candidates:
+        raise ValueError(
+            f"No inner validation project has at least {min_class_nodes} clean and defective mapped nodes"
+        )
+    return min(candidates)[1]
 
 
 def ast_args(args: argparse.Namespace) -> SimpleNamespace:
@@ -454,10 +480,9 @@ def assemble_ndgs(
         mask[:, 0] = True
         for node_id, name in enumerate(base.names):
             key = (project_name, name)
-            if key not in ast_lookup:
-                raise ValueError(f"Missing fold-specific AST embedding for {key}")
-            ast_x[node_id] = ast_lookup[key]
-            mask[node_id, 1] = True
+            if key in ast_lookup:
+                ast_x[node_id] = ast_lookup[key]
+                mask[node_id, 1] = True
             if key in cfg_lookup:
                 cfg_x[node_id] = cfg_lookup[key]
                 mask[node_id, 2] = True
@@ -515,7 +540,7 @@ def run_outer_fold(
     output_dir: Path,
 ) -> tuple[dict[str, Any], pd.DataFrame, np.ndarray]:
     outer_train_projects = [project for project in all_projects if project != test_project]
-    validation_project = outer_train_projects[fold_index % len(outer_train_projects)]
+    validation_project = choose_validation_project(base_ndgs, outer_train_projects)
     fit_projects = [project for project in outer_train_projects if project != validation_project]
     if test_project in fit_projects or test_project == validation_project:
         raise AssertionError("Outer test project crossed the nested training boundary")
@@ -664,14 +689,36 @@ def safe_pooled_metrics(predictions: pd.DataFrame, probability_column: str) -> d
     )
 
 
+def aggregate_fold_metrics(fold_metrics: pd.DataFrame, prefix: str) -> dict[str, dict[str, float | int | None]]:
+    """Summarize project-level performance without weighting large projects more."""
+    summary: dict[str, dict[str, float | int | None]] = {}
+    for metric in ("accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"):
+        values = pd.to_numeric(fold_metrics[f"{prefix}_{metric}"], errors="coerce").dropna()
+        summary[metric] = {
+            "mean": float(values.mean()) if not values.empty else None,
+            "std": float(values.std(ddof=1)) if len(values) > 1 else None,
+            "median": float(values.median()) if not values.empty else None,
+            "valid_projects": int(len(values)),
+        }
+    return summary
+
+
+def prepare_output_dir(output_dir: Path) -> None:
+    """Clean a specific experiment directory while refusing broad targets."""
+    forbidden = {Path(output_dir.anchor), Path.home().resolve(), REPO_ROOT.resolve()}
+    if output_dir.resolve() in forbidden:
+        raise ValueError(f"Refusing to clean unsafe output directory: {output_dir}")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
 def main() -> None:
     args = parse_args()
     if min(args.upstream_epochs, args.ndg_epochs, args.patience, args.ast_batch_size, args.cfg_batch_size) <= 0:
         raise ValueError("Epoch, patience, and batch-size arguments must be positive")
     output_dir = resolve_path(args.output_dir)
-    if output_dir.exists() and not args.no_clean:
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    prepare_output_dir(output_dir)
     device = choose_device(args.device)
 
     ndg_edge_vocab = {str(key): int(value) for key, value in load_json(resolve_path(args.ndg_edge_vocab)).items()}
@@ -683,7 +730,11 @@ def main() -> None:
     if unknown:
         raise ValueError(f"Unknown test projects: {unknown}")
 
-    ast_index, ast_vocab = ast_pipeline.load_inputs(resolve_path(args.ast_index), resolve_path(args.ast_node_vocab))
+    ast_index_all, ast_vocab = ast_pipeline.load_inputs(resolve_path(args.ast_index), resolve_path(args.ast_node_vocab))
+    ast_fallback_count = int((ast_index_all["parser_mode"].astype(str) == "fallback").sum())
+    ast_index = ast_index_all.copy()
+    if not args.include_ast_fallbacks:
+        ast_index = ast_index[ast_index["parser_mode"].astype(str) != "fallback"].reset_index(drop=True)
     cfg_index, node_vocab, stmt_vocab, invoke_vocab, cfg_edge_vocab, cfg_feature_names, _ = cfg_pipeline.load_inputs(
         resolve_path(args.cfg_index),
         resolve_path(args.cfg_node_vocab),
@@ -692,8 +743,11 @@ def main() -> None:
         resolve_path(args.cfg_edge_vocab),
         resolve_path(args.cfg_feature_names),
     )
-    if set(all_projects) != set(ast_index["dataset_name"].astype(str).unique()):
+    if set(all_projects) != set(ast_index_all["dataset_name"].astype(str).unique()):
         raise ValueError("AST and NDG project sets differ")
+    missing_ast_projects = sorted(set(all_projects) - set(ast_index["dataset_name"].astype(str).unique()))
+    if missing_ast_projects:
+        raise ValueError(f"No usable AST graphs remain for projects: {missing_ast_projects}")
     if not set(all_projects).issuperset(set(cfg_index["dataset_name"].astype(str).unique())):
         raise ValueError("CFG index contains a project absent from NDG")
 
@@ -772,12 +826,18 @@ def main() -> None:
             "CFG training and epoch selection",
             "NDG training and epoch selection",
             "metric normalization",
-            "classification threshold selection",
         ],
         "model_pooled_metrics": safe_pooled_metrics(all_predictions, "probability"),
         "baseline_pooled_metrics": safe_pooled_metrics(all_predictions, "baseline_probability"),
+        "model_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "model"),
+        "baseline_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "baseline"),
         "ndg_encoder_config": asdict(ndg_config),
         "cfg_placeholder_policy": "Missing CFG view is masked; the NDG file node is retained.",
+        "ast_fallback_policy": "included" if args.include_ast_fallbacks else "masked_as_missing_view",
+        "ast_fallback_graphs": ast_fallback_count,
+        "metric_transform": "training-fold median imputation followed by training-fold standard scaling",
+        "random_seed": args.seed,
+        "classification_threshold": 0.5,
     }
     (output_dir / "nested_lopo_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"node_embeddings={embeddings_path}", flush=True)

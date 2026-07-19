@@ -2,7 +2,7 @@
 """Extract project-level Network Dependency Graphs for PROMISE Java SDP datasets.
 
 Default input:
-    outputs/promise/promise_preprocessed_standard.csv
+    outputs/promise/promise_preprocessed_log1p.csv
 
 Default output:
     outputs/promise/ndg/
@@ -128,7 +128,9 @@ class TypeResolver:
         if self.package:
             candidates.append(f"{self.package}.{name}")
         candidates.extend(f"{prefix}.{name}" for prefix in self.wildcard_imports)
-        candidates.extend(sorted(self.simple_to_types.get(name.split(".")[-1], set())))
+        simple_matches = self.simple_to_types.get(name.split(".")[-1], set())
+        if len(simple_matches) == 1:
+            candidates.extend(simple_matches)
 
         for candidate in candidates:
             current = candidate
@@ -700,7 +702,7 @@ def build_report(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract project-level NDGs for PROMISE Java SDP datasets.")
-    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_standard.csv"))
+    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_log1p.csv"))
     parser.add_argument("--preprocess-summary", type=Path, default=Path("outputs/promise/promise_preprocess_summary.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/ndg"))
     parser.add_argument("--dataset-name", help="Optional dataset filter, e.g. ant-1.6")

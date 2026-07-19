@@ -2,7 +2,7 @@
 """Extract Soot-based CFG graphs for multi-project PROMISE Java SDP datasets.
 
 Default input:
-    outputs/promise/promise_preprocessed_standard.csv
+    outputs/promise/promise_preprocessed_log1p.csv
 
 Default output:
     outputs/promise/cfg/
@@ -953,7 +953,7 @@ def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issu
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract Soot-based CFG graphs for PROMISE Java SDP datasets.")
-    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_standard.csv"))
+    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_log1p.csv"))
     parser.add_argument("--preprocess-summary", type=Path, default=Path("outputs/promise/promise_preprocess_summary.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/cfg"))
     parser.add_argument("--build-dir", type=Path, default=Path("build/promise_cfg_soot"))
