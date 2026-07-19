@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Run Leave-One-Project-Out CFG encoder evaluation without placeholder CFGs.
-
-The CFG encoder is evaluated as a cross-project SDP model. Each fold trains on
-all projects except one held-out project, uses a validation split only inside the
-training projects for early stopping, and tests on the held-out project.
-
-Placeholder CFG graphs are always excluded because they only contain a trivial
-ENTRY -> EXIT structure and do not carry useful control-flow information.
-"""
+"""Evaluate real Soot CFGs with project-held-out encoder training."""
 
 from __future__ import annotations
 

@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Strict nested LOPO evaluation for the final AST + CFG + NDG SDP model.
-
-For every outer test project, AST, CFG, and NDG encoders are trained from
-scratch without using that project's labels. An inner project is used for epoch
-selection. The upstream encoders are then retrained on all outer-training
-projects, their fold-specific file embeddings are fused into NDG nodes, and the
-final NDG model predicts every file node in the untouched outer project.
-"""
+"""Run strict nested LOPO evaluation for the final multi-view NDG model."""
 
 from __future__ import annotations
 

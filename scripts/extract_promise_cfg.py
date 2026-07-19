@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Extract Soot-based CFG graphs for multi-project PROMISE Java SDP datasets.
-
-Default input:
-    outputs/promise/promise_preprocessed_log1p.csv
-
-Default output:
-    outputs/promise/cfg/
-
-The extractor compiles each project separately, runs the Soot backend on mapped
-classes for that project, and writes one file-level CFG graph per mapped row.
-"""
+"""Extract one Soot-based file-level CFG per mapped PROMISE Java file."""
 
 from __future__ import annotations
 
@@ -19,7 +9,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -523,22 +513,6 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
     return {"graph": graph, "tensors": build_tensors(nodes, edges)}
 
 
-def cfg_method_mermaid(graph: dict[str, Any], method_id: str, limit: int = 30) -> str:
-    nodes = [node for node in graph["nodes"] if node["method_id"] == method_id][:limit]
-    node_ids = {node["id"] for node in nodes}
-    edges = [edge for edge in graph["edges"] if edge["source"] in node_ids and edge["target"] in node_ids]
-    lines = ["graph TD"]
-    for node in nodes:
-        snippet = node["snippet"].replace('"', "'")
-        label = f"{node['node_type']}:{node.get('stmt_kind', 'OTHER')}#{node['id']}"
-        if snippet and not node["is_synthetic"]:
-            label += f" | {snippet[:55]}"
-        lines.append(f'  N{node["id"]}["{label}"]')
-    for edge in edges:
-        lines.append(f'  N{edge["source"]} -->|{edge["edge_type"]}| N{edge["target"]}')
-    return "\n".join(lines)
-
-
 def prepare_dirs(output_dir: Path, build_dir: Path, clean: bool) -> tuple[Path, Path, Path]:
     graphs_dir = output_dir / "graphs"
     tensors_dir = output_dir / "tensors"
@@ -749,207 +723,6 @@ def validate_outputs(index_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     return issues
 
 
-def build_report(summary: dict[str, Any], index_rows: list[dict[str, Any]], issues: list[dict[str, str]]) -> str:
-    node_counts: Counter[str] = Counter()
-    stmt_counts: Counter[str] = Counter()
-    invoke_counts: Counter[str] = Counter()
-    edge_counts: Counter[str] = Counter()
-    example_graph: dict[str, Any] | None = None
-    for row in index_rows:
-        graph = json.loads(Path(row["graph_json"]).read_text(encoding="utf-8"))
-        if example_graph is None and graph["methods"] and row["extraction_mode"] == "soot":
-            example_graph = graph
-        node_counts.update(node["node_type"] for node in graph["nodes"])
-        stmt_counts.update(node.get("stmt_kind", "OTHER") for node in graph["nodes"])
-        invoke_counts.update(node.get("invoke_kind", "NO_INVOKE") for node in graph["nodes"])
-        edge_counts.update(edge["edge_type"] for edge in graph["edges"])
-
-    node_type_rows = [f"| `{name}` | {idx} |" for name, idx in NODE_TYPE_TO_ID.items()]
-    stmt_kind_rows = [f"| `{name}` | {idx} |" for name, idx in STMT_KIND_TO_ID.items()]
-    invoke_kind_rows = [f"| `{name}` | {idx} |" for name, idx in INVOKE_KIND_TO_ID.items()]
-    edge_type_rows = [f"| `{name}` | {idx} |" for name, idx in EDGE_TYPE_TO_ID.items()]
-    feature_rows = [f"| {idx} | `{name}` |" for idx, name in enumerate(FEATURE_NAMES)]
-    dataset_rows = [
-        "| `{dataset}` | {requested} | {graphs} | {soot_graphs} | {placeholder_graphs} | {issues} | `{source_level}` |".format(**row)
-        for row in summary["datasets"]
-    ]
-    issue_rows = [f"| `{issue.get('dataset_name', '')}` | `{issue.get('file_id', '')}` | `{issue.get('error', issue.get('issue', ''))}` |" for issue in issues[:40]]
-    if not issue_rows:
-        issue_rows = ["| None | None | None |"]
-
-    mermaid = "graph TD\n  EMPTY[\"No Soot graph available\"]"
-    if example_graph is not None:
-        method_id = example_graph["methods"][0]["method_id"]
-        mermaid = cfg_method_mermaid(example_graph, method_id)
-
-    lines = [
-        "# CFG Extraction Report for Multi-Project PROMISE Dataset",
-        "",
-        "## 1. Objective",
-        "This report describes the generalized CFG extraction stage for the multi-project PROMISE SDP dataset. "
-        "The extractor creates one file-level CFG graph for every preprocessed row that has a mapped Java source file.",
-        "",
-        "## 2. Input Data",
-        f"- Input CSV: `{summary['input_csv']}`",
-        f"- Output directory: `{summary['output_dir']}`",
-        f"- Dataset rows: {summary['input_rows']}",
-        f"- Mapped rows requested: {summary['requested_mapped_files']}",
-        f"- Graphs generated: {summary['graphs_generated']}",
-        "",
-        "## 3. Extraction Pipeline",
-        "- Group mapped rows by `dataset_name`.",
-        "- Compile each project's Java sources with Eclipse ECJ and `-proceedOnError`.",
-        "- Run Soot on each project's compiled class files.",
-        "- Build method-level CFGs from Soot `ExceptionalUnitGraph`.",
-        "- Add explicit synthetic `ENTRY` and `EXIT` nodes per method.",
-        "- Aggregate all method CFGs into one file-level CFG graph.",
-        "- Emit placeholder `ENTRY -> EXIT` graphs when Soot cannot recover a concrete class body.",
-        "",
-        "```text",
-        "combined PROMISE CSV -> per-project ECJ compile -> Soot Jimple -> method CFGs -> file-level CFG dataset",
-        "```",
-        "",
-        "## 4. Node Features",
-        "The CFG node representation now separates categorical syntax/IR labels from numeric features:",
-        "",
-        "```text",
-        "node_type_id      -> broad CFG role: ENTRY, EXIT, STATEMENT, CONDITION, RETURN, ...",
-        "stmt_kind_id      -> Jimple statement kind: ASSIGN, INVOKE, IF, GOTO, RETURN_VALUE, ...",
-        "invoke_kind_id    -> invocation dispatch kind: STATIC, VIRTUAL, INTERFACE, SPECIAL, ...",
-        "x(node)          -> numeric/binary instruction and CFG-role features",
-        "```",
-        "",
-        "During GNN training, use trainable embeddings for `node_type_id`, `stmt_kind_id`, and `invoke_kind_id`, "
-        "then concatenate those learned categorical embeddings with the numeric `x.npy` features.",
-        "",
-        "```text",
-        "complete_node_x = concat(",
-        "  node_type_embedding(node_type_id),",
-        "  stmt_kind_embedding(stmt_kind_id),",
-        "  invoke_kind_embedding(invoke_kind_id),",
-        "  x",
-        ")",
-        "```",
-        "",
-        f"- Numeric feature dimension: {summary['structural_feature_dim']}",
-        f"- Node type embedding dimension: {summary['node_type_embedding_dim']}",
-        f"- Statement kind embedding dimension: {summary['stmt_kind_embedding_dim']}",
-        f"- Invocation kind embedding dimension: {summary['invoke_kind_embedding_dim']}",
-        f"- Model node feature dimension after concatenation: {summary['model_node_feature_dim']}",
-        "",
-        "The numeric feature vector includes source-position features, instruction flags, and CFG structural-role features.",
-        "",
-        "### 4.1 Numeric Node Feature Layout",
-        "| Index | Feature |",
-        "| ---: | --- |",
-        *feature_rows,
-        "",
-        "### 4.2 CFG Node Types",
-        "| Node type | ID |",
-        "| --- | ---: |",
-        *node_type_rows,
-        "",
-        "### 4.3 Statement Kinds",
-        "| Statement kind | ID |",
-        "| --- | ---: |",
-        *stmt_kind_rows,
-        "",
-        "### 4.4 Invocation Kinds",
-        "| Invocation kind | ID |",
-        "| --- | ---: |",
-        *invoke_kind_rows,
-        "",
-        "### 4.5 CFG Edge Types",
-        "| Edge type | ID |",
-        "| --- | ---: |",
-        *edge_type_rows,
-        "",
-        "| Edge type | Meaning |",
-        "| --- | --- |",
-        "| `CFG_NEXT` | Normal control-flow successor. |",
-        "| `CFG_TRUE` | Target reached when an `if` condition evaluates true. |",
-        "| `CFG_FALSE` | Target reached when an `if` condition evaluates false. |",
-        "| `CFG_RETURN` | Return statement flow to the method `EXIT`. |",
-        "| `CFG_EXCEPTION` | Exceptional successor or explicit throw flow. |",
-        "| `CFG_BACK` | Approximate loop/back edge where control returns to an earlier statement. |",
-        "| `CFG_SWITCH_CASE` | Non-default switch case successor. |",
-        "| `CFG_SWITCH_DEFAULT` | Default switch successor. |",
-        "",
-        "## 5. Output Files",
-        "- `graph_index.csv`: one row per generated CFG graph with graph/tensor paths.",
-        "- `graphs/*.json`: readable file-level CFG graphs.",
-        "- `tensors/*_x.npy`: numeric node feature tensors.",
-        "- `tensors/*_node_type_id.npy`: exact CFG node type ids.",
-        "- `tensors/*_stmt_kind_id.npy`: Jimple statement kind ids.",
-        "- `tensors/*_invoke_kind_id.npy`: invocation dispatch kind ids.",
-        "- `tensors/*_edge_index.npy`: CFG connectivity tensors.",
-        "- `tensors/*_edge_type.npy`: CFG relation type tensors.",
-        "- `node_type_vocab.json`: stable CFG node type vocabulary.",
-        "- `stmt_kind_vocab.json`: stable statement kind vocabulary.",
-        "- `invoke_kind_vocab.json`: stable invocation kind vocabulary.",
-        "- `edge_type_vocab.json`: stable CFG edge type vocabulary.",
-        "- `feature_names.json`: ordered numeric node feature names for `x.npy`.",
-        "- `cfg_summary.json`: global extraction statistics.",
-        "- `parse_failures.json`: ECJ/Soot extraction issue log.",
-        "- `validation_issues.json`: tensor validation issue log.",
-        "- `logs/*_ecj_compile.log`: per-dataset ECJ compile diagnostics.",
-        "- `logs/*_soot_extractor.log`: per-dataset Soot runner diagnostics.",
-        "",
-        "## 6. Results",
-        "| Metric | Value |",
-        "| --- | ---: |",
-        f"| Input rows | {summary['input_rows']} |",
-        f"| Mapped rows requested | {summary['requested_mapped_files']} |",
-        f"| Graphs generated | {summary['graphs_generated']} |",
-        f"| Real Soot graphs | {summary['soot_graphs']} |",
-        f"| Placeholder graphs | {summary['placeholder_graphs']} |",
-        f"| Logged extraction issues | {summary['parse_failures']} |",
-        f"| Validation issues | {summary['validation_issues']} |",
-        f"| Total method CFGs | {summary['total_methods']} |",
-        f"| Total nodes | {summary['total_nodes']} |",
-        f"| Total edges | {summary['total_edges']} |",
-        f"| Average nodes per graph | {summary['avg_nodes_per_file']:.2f} |",
-        f"| Average edges per graph | {summary['avg_edges_per_file']:.2f} |",
-        "",
-        "## 7. Per-Dataset Results",
-        "| Dataset | Requested | Graphs | Soot graphs | Placeholder graphs | Issues | ECJ level |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
-        *dataset_rows,
-        "",
-        "## 8. Node and Edge Distribution",
-        "### 8.1 Node Types",
-        *[f"- `{name}`: {count}" for name, count in node_counts.most_common()],
-        "",
-        "### 8.2 Statement Kinds",
-        *[f"- `{name}`: {count}" for name, count in stmt_counts.most_common()],
-        "",
-        "### 8.3 Invocation Kinds",
-        *[f"- `{name}`: {count}" for name, count in invoke_counts.most_common()],
-        "",
-        "### 8.4 Edge Types",
-        *[f"- `{name}`: {count}" for name, count in edge_counts.most_common()],
-        "",
-        "## 9. Notes",
-        "- This CFG view captures execution order and branch behavior, not syntax hierarchy.",
-        "- Edge behavior remains in typed CFG edges, while node features describe what each Jimple statement does.",
-        "- Soot operates on Jimple statements, so snippets and statement kinds are normalized intermediate-representation statements.",
-        "- `CFG_BACK` and loop membership are approximate and derived from control-flow edges that return to earlier statements.",
-        "- ECJ diagnostics are expected for legacy PROMISE projects and are saved under `outputs/promise/cfg/logs/`.",
-        "- Placeholder graphs preserve dataset alignment but should be tracked during experiments.",
-        "- `CFG_BREAK` and `CFG_CONTINUE` are not exported separately by this backend; Soot resolves them to successor edges.",
-        "",
-        "## 10. Logged Issues",
-        "| Dataset | File | Issue |",
-        "| --- | --- | --- |",
-        *issue_rows,
-        "",
-        "## 11. Sample Visualizations",
-        "```mermaid",
-        mermaid,
-        "```",
-    ]
-    return "\n".join(lines) + "\n"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract Soot-based CFG graphs for PROMISE Java SDP datasets.")
@@ -1102,8 +875,6 @@ def main() -> None:
     (output_dir / "cfg_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (output_dir / "parse_failures.json").write_text(json.dumps(parse_failures, indent=2), encoding="utf-8")
     (output_dir / "validation_issues.json").write_text(json.dumps(validation_issues, indent=2), encoding="utf-8")
-    (output_dir / "cfg_report.md").write_text(build_report(summary, index_rows, [*parse_failures, *validation_issues]), encoding="utf-8")
-
     print(
         "PROMISE CFG extraction finished. "
         f"datasets={len(dataset_summaries)} graphs_generated={len(index_rows)} "
@@ -1112,7 +883,6 @@ def main() -> None:
     )
     print(f"index={cfg_index_path}")
     print(f"summary={output_dir / 'cfg_summary.json'}")
-    print(f"report={output_dir / 'cfg_report.md'}")
 
 
 if __name__ == "__main__":

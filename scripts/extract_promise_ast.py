@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Extract filtered AST graphs for multi-project PROMISE Java SDP datasets.
-
-Default input:
-    outputs/promise/promise_preprocessed_log1p.csv
-
-Default output:
-    outputs/promise/ast/
-
-The extractor creates one graph per mapped Java class. It keeps the same tensor
-contract as the earlier Log4j-only AST stage:
-- x.npy: structural node features [depth, out_degree, has_identifier]
-- node_type_id.npy: exact AST node type ids for a trainable embedding layer
-- edge_index.npy: directed AST parent -> child edges
-"""
+"""Extract one filtered AST graph per mapped PROMISE Java file."""
 
 from __future__ import annotations
 
@@ -272,19 +259,6 @@ def build_feature_matrix(
     return x, node_type_ids
 
 
-def to_mermaid(nodes: Sequence[KeptNode], edges: Sequence[tuple[int, int]], limit: int = 45) -> str:
-    use_nodes = nodes[:limit]
-    keep_ids = {node.node_id for node in use_nodes}
-    kept_edges = [(src, dst) for src, dst in edges if src in keep_ids and dst in keep_ids]
-    lines = ["graph TD"]
-    for node in use_nodes:
-        label = f"{node.node_type}#{node.node_id}"
-        lines.append(f'  N{node.node_id}["{label}"]')
-    for src, dst in kept_edges:
-        lines.append(f"  N{src} --> N{dst}")
-    return "\n".join(lines)
-
-
 def prepare_output_dirs(output_dir: Path, clean: bool) -> tuple[Path, Path]:
     graphs_dir = output_dir / "graphs"
     tensors_dir = output_dir / "tensors"
@@ -393,126 +367,6 @@ def extract_one(row: pd.Series, graphs_dir: Path, tensors_dir: Path) -> tuple[di
         return {}, fallback_record, {"dataset_name": dataset_name, "name": class_name, "source_path": str(source_path), "error": str(exc)}
 
 
-def build_report(summary: dict[str, Any], graph_rows: list[dict[str, Any]], top_types: list[tuple[str, int]]) -> str:
-    dataset_rows = [
-        "| `{dataset}` | {requested} | {graphs} | {fallbacks} | {failures} |".format(**row)
-        for row in summary["datasets"]
-    ]
-    top_type_rows = [f"- `{node_type}`: {count}" for node_type, count in top_types[:15]]
-
-    sample_sections: list[str] = []
-    for idx, row in enumerate(graph_rows[:3], start=1):
-        graph = json.loads(Path(row["graph_json"]).read_text(encoding="utf-8"))
-        nodes = [
-            KeptNode(
-                node_id=int(node["id"]),
-                node_type=str(node["type"]),
-                depth=int(node["depth"]),
-                sibling_index=0,
-                parent_id=node.get("parent_id"),
-                text_hint="",
-            )
-            for node in graph["nodes"]
-        ]
-        edges = [tuple(edge) for edge in graph["edges"]]
-        sample_sections.extend(
-            [
-                f"### {idx}. `{row['graph_id']}`",
-                "```mermaid",
-                to_mermaid(nodes, edges, limit=45),
-                "```",
-                "",
-            ]
-        )
-
-    lines = [
-        "# AST Extraction Report for Multi-Project PROMISE Dataset",
-        "",
-        "## 1. Objective",
-        "This report describes the generalized AST extraction stage for the multi-project PROMISE SDP dataset. "
-        "The extractor creates one AST graph for every preprocessed row that has a mapped Java source file.",
-        "",
-        "## 2. Input Data",
-        f"- Input CSV: `{summary['input_csv']}`",
-        f"- Output directory: `{summary['output_dir']}`",
-        f"- Dataset rows: {summary['input_rows']}",
-        f"- Mapped rows requested: {summary['requested_mapped_samples']}",
-        f"- Graphs generated: {summary['graphs_generated']}",
-        "",
-        "## 3. Extraction Pipeline",
-        "- Read the combined preprocessed PROMISE CSV.",
-        "- Keep rows with valid `source_path` values and non-failed source matching.",
-        "- Parse each Java source file using `javalang`.",
-        "- Keep a curated set of syntax-relevant AST node types.",
-        "- Reconnect each retained node to the nearest retained ancestor.",
-        "- Save graph JSON plus GNN-ready tensors.",
-        "- If strict parsing fails, create a deterministic fallback AST-like graph and record it in `parse_fallbacks.json`.",
-        "",
-        "```text",
-        "combined PROMISE CSV -> mapped Java files -> filtered AST graphs -> graph/tensor dataset",
-        "```",
-        "",
-        "## 4. Node Features",
-        "The stored structural tensor is deliberately compact:",
-        "",
-        "```text",
-        "x(node) = [depth, out_degree, has_identifier]",
-        "```",
-        "",
-        "The exact AST node type is stored separately in `node_type_id.npy`. During GNN training, use a trainable "
-        f"`Embedding(vocab_size={summary['node_type_vocab_size']}, embedding_dim={summary['node_type_embedding_dim']})` "
-        "and concatenate the learned type embedding with the 3 structural features.",
-        "",
-        "```text",
-        "complete_node_x = concat(node_type_embedding(node_type_id), structural_x)",
-        "```",
-        "",
-        f"- Structural feature dimension: {summary['structural_feature_dim']}",
-        f"- Node type embedding dimension: {summary['node_type_embedding_dim']}",
-        f"- Model node feature dimension after concatenation: {summary['model_node_feature_dim']}",
-        "",
-        "## 5. Output Files",
-        "- `graph_index.csv`: one row per generated AST graph with graph/tensor paths.",
-        "- `graphs/*.json`: readable graph files with metadata, nodes, and edges.",
-        "- `tensors/*_x.npy`: structural node features.",
-        "- `tensors/*_node_type_id.npy`: exact AST node type ids.",
-        "- `tensors/*_edge_index.npy`: AST parent-child connectivity.",
-        "- `node_type_vocab.json`: stable exact AST node type vocabulary.",
-        "- `ast_summary.json`: global extraction statistics.",
-        "- `parse_failures.json`: hard failures.",
-        "- `parse_fallbacks.json`: strict parser failures recovered by fallback extraction.",
-        "",
-        "## 6. Results",
-        "| Metric | Value |",
-        "| --- | ---: |",
-        f"| Input rows | {summary['input_rows']} |",
-        f"| Mapped rows requested | {summary['requested_mapped_samples']} |",
-        f"| Graphs generated | {summary['graphs_generated']} |",
-        f"| Parse failures | {summary['parse_failures']} |",
-        f"| Fallback graphs | {summary['fallback_graphs']} |",
-        f"| Total nodes | {summary['total_nodes']} |",
-        f"| Total edges | {summary['total_edges']} |",
-        f"| Average nodes per graph | {summary['avg_nodes_per_graph']:.2f} |",
-        f"| Average edges per graph | {summary['avg_edges_per_graph']:.2f} |",
-        "",
-        "## 7. Per-Dataset Results",
-        "| Dataset | Requested | Graphs | Fallbacks | Failures |",
-        "| --- | ---: | ---: | ---: | ---: |",
-        *dataset_rows,
-        "",
-        "## 8. Top Node Types",
-        *top_type_rows,
-        "",
-        "## 9. Notes",
-        "- This AST view captures syntax, not execution order or file-level dependency behavior.",
-        "- Keep behavior in CFG/NDG edge types instead of encoding it into AST node features.",
-        "- Fallback graphs preserve dataset coverage but are less precise than strict `javalang` graphs.",
-        "",
-        "## 10. Sample Visualizations",
-        *sample_sections,
-    ]
-    return "\n".join(lines).rstrip() + "\n"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract AST graphs for PROMISE Java SDP datasets.")
@@ -604,8 +458,6 @@ def main() -> None:
     (output_dir / "ast_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (output_dir / "parse_failures.json").write_text(json.dumps(parse_failures, indent=2), encoding="utf-8")
     (output_dir / "parse_fallbacks.json").write_text(json.dumps(parse_fallbacks, indent=2), encoding="utf-8")
-    (output_dir / "ast_report.md").write_text(build_report(summary, graph_rows, top_types), encoding="utf-8")
-
     print(
         "PROMISE AST extraction finished. "
         f"datasets={len(dataset_summaries)} graphs_generated={len(graph_rows)} "
@@ -613,7 +465,6 @@ def main() -> None:
     )
     print(f"index={graph_index_path}")
     print(f"summary={output_dir / 'ast_summary.json'}")
-    print(f"report={output_dir / 'ast_report.md'}")
 
 
 if __name__ == "__main__":

@@ -1,20 +1,4 @@
-"""CFG graph encoder based on edge-aware GAT layers and attention pooling.
-
-The encoder consumes the CFG tensor contract produced by
-`scripts/extract_promise_cfg.py`:
-
-- x: numeric statement/control-flow features with shape [num_nodes, 25]
-- node_type_id: CFG node type ids with shape [num_nodes]
-- stmt_kind_id: Jimple statement kind ids with shape [num_nodes]
-- invoke_kind_id: invocation dispatch kind ids with shape [num_nodes]
-- edge_index: directed CFG edges with shape [2, num_edges]
-- edge_type: CFG edge type ids with shape [num_edges]
-- batch: graph assignment vector with shape [num_nodes]
-
-It returns one fixed-size embedding per file-level CFG graph. CFG behavior is
-represented primarily by typed directed edges, so edge-type embeddings are fed
-directly into GATv2 attention.
-"""
+"""Edge-aware GAT encoder and attention pooling for file-level CFGs."""
 
 from __future__ import annotations
 
@@ -33,17 +17,7 @@ CFG_NON_NEGATIVE_FEATURE_INDICES = [16, 17]
 
 
 def normalize_cfg_structural_features(x: Tensor) -> Tensor:
-    """Clamp CFG numeric node features to their expected ranges.
-
-    The current CFG extractor stores 25 numeric features:
-
-    - source-position features
-    - instruction flags
-    - CFG structural-role features
-
-    Most are already bounded by construction. This transform keeps the model
-    robust to accidental numeric drift while preserving logged degree features.
-    """
+    """Clamp CFG numeric node features to their expected ranges."""
     if x.dim() != 2 or x.size(-1) != CFG_NUMERIC_FEATURE_DIM:
         raise ValueError(f"Expected x with shape [num_nodes, {CFG_NUMERIC_FEATURE_DIM}], received {tuple(x.shape)}")
     if x.size(0) == 0:
@@ -117,15 +91,7 @@ class CFGEncoderConfig:
 
 
 class CFGEdgeAwareGATEncoder(nn.Module):
-    """Relational/edge-aware GAT encoder for CFG graphs.
-
-    Node semantics are represented by trainable embeddings for the broad CFG node
-    type, Jimple statement kind, and invocation kind, plus numeric instruction
-    and CFG-role features. Control-flow behavior is represented by trainable
-    edge-type embeddings that are used inside GATv2 attention, allowing edges
-    such as `CFG_TRUE`, `CFG_FALSE`, `CFG_BACK`, and `CFG_EXCEPTION` to receive
-    different learned importance.
-    """
+    """Return one edge-aware GAT embedding per file-level CFG."""
 
     def __init__(self, config: CFGEncoderConfig) -> None:
         super().__init__()
@@ -267,21 +233,7 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         batch: Tensor | None = None,
         return_attention: bool = False,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
-        """Encode a batch of CFG graphs.
-
-        Args:
-            x: Numeric CFG node features, shape [num_nodes, 25].
-            node_type_id: CFG node type ids, shape [num_nodes].
-            stmt_kind_id: Jimple statement kind ids, shape [num_nodes].
-            invoke_kind_id: invocation kind ids, shape [num_nodes].
-            edge_index: Directed CFG connectivity, shape [2, num_edges].
-            edge_type: CFG edge type ids, shape [num_edges].
-            batch: Graph id for each node. If omitted, all nodes are treated as
-                one graph.
-            return_attention: When true, also return node pooling attention and
-                last-layer edge attention. These values are useful for
-                approximate inspection, not exact causal explanation.
-        """
+        """Encode a batch and optionally return node and edge attention."""
         if batch is None:
             batch = x.new_zeros(x.size(0), dtype=torch.long)
         if batch.dim() != 1 or batch.size(0) != x.size(0):

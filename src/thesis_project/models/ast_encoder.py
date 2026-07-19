@@ -1,16 +1,4 @@
-"""AST graph encoder based on GIN layers and attention pooling.
-
-The encoder consumes the AST tensor contract produced by
-`scripts/extract_promise_ast.py`:
-
-- x: structural node features with shape [num_nodes, 3]
-- node_type_id: exact AST node type ids with shape [num_nodes]
-- edge_index: directed AST parent-child edges with shape [2, num_edges]
-- batch: graph assignment vector with shape [num_nodes]
-
-It returns one fixed-size embedding per AST graph. These embeddings can later be
-joined with the file-level NDG nodes by `graph_id` / fully-qualified class name.
-"""
+"""GIN encoder and attention pooling for file-level AST graphs."""
 
 from __future__ import annotations
 
@@ -24,19 +12,7 @@ from torch_geometric.utils import softmax
 
 
 def normalize_ast_structural_features(x: Tensor) -> Tensor:
-    """Normalize AST structural node features graph-by-graph.
-
-    The raw AST extractor stores:
-
-    - depth
-    - out_degree
-    - has_identifier
-
-    Before GNN training, depth and out-degree should not be left on unrelated
-    raw numeric scales. This transform keeps the binary identifier flag as-is,
-    scales depth by the maximum depth inside the graph, and applies `log1p` to
-    out-degree.
-    """
+    """Scale depth per graph, log-transform degree, and clamp the binary flag."""
     if x.dim() != 2 or x.size(-1) != 3:
         raise ValueError(f"Expected x with shape [num_nodes, 3], received {tuple(x.shape)}")
     if x.size(0) == 0:
@@ -82,14 +58,7 @@ class ASTEncoderConfig:
 
 
 class AttentionPooling(nn.Module):
-    """Graph-level attention pooling for batched node embeddings.
-
-    The gate network assigns one scalar score to each node. Scores are normalized
-    with a softmax within each graph in the batch, then used to compute a weighted
-    sum of node embeddings. The returned weights are useful for inspecting which
-    nodes influenced pooling more, but they should be treated as approximate
-    indicators, not exact causal explanations.
-    """
+    """Compute a gated weighted sum of node embeddings for each graph."""
 
     def __init__(self, hidden_dim: int, dropout: float = 0.0) -> None:
         super().__init__()
@@ -108,13 +77,7 @@ class AttentionPooling(nn.Module):
 
 
 class ASTGINEncoder(nn.Module):
-    """GIN + attention-pooling encoder for AST graphs.
-
-    Node syntax is represented by a trainable node-type embedding. Compact
-    structural features are concatenated after the embedding, matching the AST
-    extraction design where syntax stays in node features and behavior stays in
-    other graph views.
-    """
+    """Return one GIN and attention-pooled embedding per AST graph."""
 
     def __init__(self, config: ASTEncoderConfig) -> None:
         super().__init__()
@@ -201,16 +164,7 @@ class ASTGINEncoder(nn.Module):
         batch: Tensor | None = None,
         return_attention: bool = False,
     ) -> Tensor | tuple[Tensor, Tensor]:
-        """Encode a batch of AST graphs.
-
-        Args:
-            x: Structural AST node features, shape [num_nodes, 3].
-            node_type_id: AST node type ids, shape [num_nodes].
-            edge_index: AST connectivity, shape [2, num_edges].
-            batch: Graph id for each node. If omitted, all nodes are treated as
-                one graph.
-            return_attention: When true, also return one attention weight per node.
-        """
+        """Encode a batch and optionally return node pooling weights."""
         if batch is None:
             batch = x.new_zeros(x.size(0), dtype=torch.long)
         if batch.dim() != 1 or batch.size(0) != x.size(0):

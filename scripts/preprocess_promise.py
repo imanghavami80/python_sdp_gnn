@@ -1,19 +1,5 @@
 #!/usr/bin/env python3
-"""Preprocess one or more PROMISE Java SDP datasets.
-
-The pipeline preserves the original Log4j preprocessing choices:
-1. validate PROMISE metric schema,
-2. convert defect counts to a binary classification label,
-3. median-impute numeric metrics,
-4. apply log1p to metric columns,
-5. optionally scale metric columns for standalone analysis,
-6. map each class name to a Java source file,
-7. write per-project outputs and one combined SDP CSV.
-
-By default this script discovers every `projects/*/*.csv` dataset and treats the
-dataset folder as the source root. Source mapping reads Java package
-declarations, so it works across projects with different source layouts.
-"""
+"""Preprocess and source-map PROMISE Java defect datasets."""
 
 from __future__ import annotations
 
@@ -203,13 +189,7 @@ def preprocess_frames(
     scaler_name: str,
     scale_scope: str,
 ) -> list[PreprocessResult]:
-    """Log-transform metrics and optionally apply exploratory scaling.
-
-    The default ``none`` mode deliberately defers all fitted transformations to
-    the nested LOPO evaluator. Global or per-project scaling is retained only
-    for standalone descriptive experiments, where cross-project test leakage is
-    not being estimated.
-    """
+    """Log-transform metrics and optionally apply exploratory scaling."""
     if scale_scope not in {"global", "project"}:
         raise ValueError("scale_scope must be 'global' or 'project'")
 

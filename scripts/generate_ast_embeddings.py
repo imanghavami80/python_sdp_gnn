@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Train the AST GIN encoder and save one embedding per AST graph.
-
-Default input:
-    outputs/promise/ast/graph_index.csv
-
-Default output:
-    outputs/promise/embeddings/ast/
-
-The script trains `ASTGINEncoder` as a supervised graph classifier using the AST
-labels from the graph index. It then removes the classifier head conceptually by
-saving the encoder output embedding for every AST graph.
-"""
+"""Train a global AST classifier and save exploratory file embeddings."""
 
 from __future__ import annotations
 

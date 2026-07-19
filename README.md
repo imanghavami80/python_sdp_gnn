@@ -53,6 +53,7 @@ training, normalization, or epoch selection.
 ```text
 projects/                  PROMISE CSV files and Java project source code
 scripts/                   Preprocessing, extraction, and evaluation commands
+docs/                      File-by-file developer documentation
 src/thesis_project/models/ AST, CFG, and NDG model implementations
 src/thesis_project/training/ Shared leakage-safe training utilities
 tests/                     Automated tests
@@ -61,6 +62,9 @@ outputs/                   Generated datasets, graphs, tensors, and results
 ```
 
 `outputs/` is generated locally and is excluded from Git.
+
+Detailed developer documentation for every important implementation file is
+available in [`docs/README.md`](docs/README.md).
 
 ## Setup
 
@@ -157,7 +161,7 @@ Main outputs:
 outputs/promise/ast/graph_index.csv
 outputs/promise/ast/graphs/
 outputs/promise/ast/tensors/
-outputs/promise/ast/ast_report.md
+outputs/promise/ast/ast_summary.json
 ```
 
 Files that cannot be parsed normally receive a tagged fallback AST. The final
@@ -180,7 +184,7 @@ Main outputs:
 outputs/promise/cfg/graph_index.csv
 outputs/promise/cfg/graphs/
 outputs/promise/cfg/tensors/
-outputs/promise/cfg/cfg_report.md
+outputs/promise/cfg/cfg_summary.json
 ```
 
 If Soot cannot recover a useful CFG, the file receives a tagged placeholder
@@ -203,7 +207,7 @@ Main outputs:
 outputs/promise/ndg/graph_index.csv
 outputs/promise/ndg/graphs/
 outputs/promise/ndg/tensors/
-outputs/promise/ndg/ndg_report.md
+outputs/promise/ndg/ndg_summary.json
 ```
 
 At extraction time, NDG node tensors contain the 20 preprocessed metrics. The

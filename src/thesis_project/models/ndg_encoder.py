@@ -1,16 +1,4 @@
-"""Multi-view relational attention encoder for file-level dependency graphs.
-
-Each NDG node represents one Java file and combines three complementary views:
-
-- preprocessed static software metrics
-- a file-level AST embedding
-- a file-level CFG embedding
-
-Dependency semantics are represented by categorical edge types. The encoder
-projects each node view independently, learns a per-node reliability weight for
-each available view, and then propagates the fused representation with GATv2
-layers whose attention function receives a trainable relation embedding.
-"""
+"""Multi-view relational GAT encoder for file-level dependency graphs."""
 
 from __future__ import annotations
 
@@ -71,12 +59,7 @@ class ViewProjection(nn.Module):
 
 
 class GatedMultiViewFusion(nn.Module):
-    """Reliability-weight metric, AST, and CFG views for every file.
-
-    The weighted views are concatenated before compression. This preserves
-    view-specific information while still allowing the model to down-weight an
-    uninformative or unavailable modality. Missing views receive zero weight.
-    """
+    """Weight and combine available metric, AST, and CFG file views."""
 
     NUM_VIEWS = 3
 
@@ -133,7 +116,7 @@ class GatedMultiViewFusion(nn.Module):
 
 
 class NDGMultiViewRelationalGATEncoder(nn.Module):
-    """Encode NDG files with gated multi-view fusion and relational GATv2."""
+    """Return one gated relational GAT embedding per NDG file node."""
 
     def __init__(self, config: NDGEncoderConfig) -> None:
         super().__init__()
