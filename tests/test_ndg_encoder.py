@@ -16,7 +16,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 import pandas as pd
 
 from evaluate_ndg_nested_lopo import assert_outer_boundary, choose_validation_project, project_indices
-from thesis_project.training import ProjectGraph, standardize_metrics
+from thesis_project.training import ProjectGraph, combine_graphs, select_f1_threshold, standardize_metrics
 
 
 def make_config() -> NDGEncoderConfig:
@@ -110,6 +110,7 @@ def test_metric_transform_is_fit_on_training_nodes_only() -> None:
             ast_x=torch.zeros(count, 1),
             cfg_x=torch.zeros(count, 1),
             view_mask=torch.ones(count, 3, dtype=torch.bool),
+            loss_weight=torch.ones(count),
             y=torch.zeros(count),
             edge_index=torch.zeros((2, 0), dtype=torch.long),
             edge_type=torch.zeros(0, dtype=torch.long),
@@ -120,3 +121,33 @@ def test_metric_transform_is_fit_on_training_nodes_only() -> None:
     assert torch.isfinite(train.metrics_x).all()
     assert torch.allclose(train.metrics_x.mean(dim=0), torch.zeros(1), atol=1e-6)
     assert test.metrics_x.item() > 50.0
+
+
+def test_combined_projects_have_equal_total_loss_weight() -> None:
+    def graph(count: int, name: str) -> ProjectGraph:
+        return ProjectGraph(
+            dataset_name=name,
+            names=[str(i) for i in range(count)],
+            source_paths=[str(i) for i in range(count)],
+            metrics_x=torch.zeros(count, 1),
+            ast_x=torch.zeros(count, 1),
+            cfg_x=torch.zeros(count, 1),
+            view_mask=torch.ones(count, 3, dtype=torch.bool),
+            loss_weight=torch.ones(count),
+            y=torch.zeros(count),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_type=torch.zeros(0, dtype=torch.long),
+        )
+
+    combined = combine_graphs([graph(2, "small"), graph(8, "large")])
+
+    assert torch.allclose(combined.loss_weight[:2].sum(), combined.loss_weight[2:].sum())
+
+
+def test_validation_threshold_maximizes_f1_without_forcing_half() -> None:
+    labels = torch.tensor([0, 0, 1, 1]).numpy()
+    probabilities = torch.tensor([0.10, 0.20, 0.35, 0.40]).numpy()
+
+    threshold = select_f1_threshold(labels, probabilities)
+
+    assert threshold == pytest.approx(0.35)

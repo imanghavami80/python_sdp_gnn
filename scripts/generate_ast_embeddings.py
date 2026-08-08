@@ -310,11 +310,14 @@ def extract_embeddings(
     embeddings = np.zeros((len(dataset.graph_index), output_dim), dtype=np.float32)
     model.eval()
     with torch.no_grad():
-        for batch in loader:
+        total_batches = len(loader)
+        for batch_number, batch in enumerate(loader, start=1):
             batch = move_batch(batch, device)
             graph_embeddings = model.encode(batch.x, batch.node_type_id, batch.edge_index, batch.batch)
             row_indices = batch.row_idx.view(-1).detach().cpu().numpy()
             embeddings[row_indices] = graph_embeddings.detach().cpu().numpy().astype(np.float32)
+            if batch_number == 1 or batch_number % 25 == 0 or batch_number == total_batches:
+                print(f"ast_encoding batch={batch_number}/{total_batches}", flush=True)
     return embeddings
 
 

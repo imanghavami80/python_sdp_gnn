@@ -432,6 +432,12 @@ def train_model(
             score = train_loss
 
         history.append(row)
+        print(
+            f"cfg_epoch={epoch:03d} train_loss={train_loss:.4f} "
+            + (f"val_loss={val_loss:.4f} " if val_loader is not None else "")
+            + f"train_f1={train_metrics['f1']:.4f}",
+            flush=True,
+        )
         if score < best_score - args.min_delta:
             best_score = score
             best_epoch = epoch
@@ -441,6 +447,11 @@ def train_model(
             epochs_without_improvement += 1
 
         if val_loader is not None and epochs_without_improvement >= args.patience:
+            print(
+                f"cfg_early_stopping epoch={epoch} best_epoch={best_epoch} "
+                f"best_val_loss={best_score:.4f}",
+                flush=True,
+            )
             break
 
     best_info = {
@@ -467,7 +478,8 @@ def evaluate_model(
     row_idx_list: list[Tensor] = []
 
     with torch.no_grad():
-        for batch in loader:
+        total_batches = len(loader)
+        for batch_number, batch in enumerate(loader, start=1):
             batch = move_batch(batch, device)
             targets = batch.y.float().view(-1)
             logits = model(
@@ -504,7 +516,8 @@ def extract_test_embeddings(
     rows: list[np.ndarray] = []
     vectors: list[np.ndarray] = []
     with torch.no_grad():
-        for batch in loader:
+        total_batches = len(loader)
+        for batch_number, batch in enumerate(loader, start=1):
             batch = move_batch(batch, device)
             embeddings = model.encode(
                 batch.x,
@@ -517,6 +530,8 @@ def extract_test_embeddings(
             )
             rows.append(batch.row_idx.view(-1).detach().cpu().numpy().astype(int))
             vectors.append(embeddings.detach().cpu().numpy().astype(np.float32))
+            if batch_number == 1 or batch_number % 25 == 0 or batch_number == total_batches:
+                print(f"cfg_encoding batch={batch_number}/{total_batches}", flush=True)
     if not rows:
         return np.zeros((0,), dtype=np.int64), np.zeros((0, output_dim), dtype=np.float32)
     return np.concatenate(rows), np.concatenate(vectors, axis=0)

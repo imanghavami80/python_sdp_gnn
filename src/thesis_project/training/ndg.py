@@ -10,7 +10,10 @@ import torch
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
     f1_score,
+    matthews_corrcoef,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -31,6 +34,7 @@ class ProjectGraph:
     ast_x: Tensor
     cfg_x: Tensor
     view_mask: Tensor
+    loss_weight: Tensor
     y: Tensor
     edge_index: Tensor
     edge_type: Tensor
@@ -48,6 +52,7 @@ class ProjectGraph:
             ast_x=self.ast_x.to(device),
             cfg_x=self.cfg_x.to(device),
             view_mask=self.view_mask.to(device),
+            loss_weight=self.loss_weight.to(device),
             y=self.y.to(device),
             edge_index=self.edge_index.to(device),
             edge_type=self.edge_type.to(device),
@@ -80,8 +85,18 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
         raise ValueError("Cannot combine an empty project list")
     node_offset = 0
     edge_indices: list[Tensor] = []
+    loss_weights: list[Tensor] = []
     for graph in graphs:
         edge_indices.append(graph.edge_index + node_offset)
+        # Equalize total loss contribution across differently sized projects.
+        loss_weights.append(
+            torch.full(
+                (graph.num_nodes,),
+                1.0 / graph.num_nodes,
+                dtype=torch.float32,
+                device=graph.y.device,
+            )
+        )
         node_offset += graph.num_nodes
     return ProjectGraph(
         dataset_name="+".join(graph.dataset_name for graph in graphs),
@@ -91,6 +106,7 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
         ast_x=torch.cat([graph.ast_x for graph in graphs]),
         cfg_x=torch.cat([graph.cfg_x for graph in graphs]),
         view_mask=torch.cat([graph.view_mask for graph in graphs]),
+        loss_weight=torch.cat(loss_weights),
         y=torch.cat([graph.y for graph in graphs]),
         edge_index=torch.cat(edge_indices, dim=1),
         edge_type=torch.cat([graph.edge_type for graph in graphs]),
@@ -122,6 +138,7 @@ def standardize_metrics(train_graph: ProjectGraph, *other_graphs: ProjectGraph) 
             ast_x=graph.ast_x,
             cfg_x=graph.cfg_x,
             view_mask=graph.view_mask,
+            loss_weight=graph.loss_weight,
             y=graph.y,
             edge_index=graph.edge_index,
             edge_type=graph.edge_type,
@@ -141,14 +158,25 @@ def model_inputs(graph: ProjectGraph) -> dict[str, Tensor]:
     }
 
 
-def binary_metrics(y_true: np.ndarray, probabilities: np.ndarray) -> dict[str, float | None]:
-    """Calculate fixed-threshold and threshold-independent binary metrics."""
-    predictions = (probabilities >= 0.5).astype(np.int64)
+def binary_metrics(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    threshold: float = 0.5,
+    predictions: np.ndarray | None = None,
+) -> dict[str, float | None]:
+    """Calculate threshold-dependent, ranking, and calibration metrics."""
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("threshold must be in [0, 1]")
+    if predictions is None:
+        predictions = (probabilities >= threshold).astype(np.int64)
     result: dict[str, float | None] = {
         "accuracy": float(accuracy_score(y_true, predictions)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, predictions)),
         "precision": float(precision_score(y_true, predictions, zero_division=0)),
         "recall": float(recall_score(y_true, predictions, zero_division=0)),
         "f1": float(f1_score(y_true, predictions, zero_division=0)),
+        "mcc": float(matthews_corrcoef(y_true, predictions)),
+        "brier_score": float(brier_score_loss(y_true, probabilities)),
     }
     if len(np.unique(y_true)) == 2:
         result["roc_auc"] = float(roc_auc_score(y_true, probabilities))
@@ -163,11 +191,29 @@ def make_model(config: NDGEncoderConfig, device: torch.device) -> NDGNodeClassif
     return NDGNodeClassifier(NDGMultiViewRelationalGATEncoder(config), dropout=config.dropout).to(device)
 
 
-def loss_function(labels: Tensor) -> nn.BCEWithLogitsLoss:
-    positives = float(labels.sum().item())
-    negatives = float(labels.numel() - positives)
+def loss_function(labels: Tensor, sample_weights: Tensor) -> nn.BCEWithLogitsLoss:
+    weights = sample_weights.to(dtype=labels.dtype)
+    positives = float((weights * labels).sum().item())
+    negatives = float((weights * (1.0 - labels)).sum().item())
     weight = negatives / positives if positives else 1.0
-    return nn.BCEWithLogitsLoss(pos_weight=labels.new_tensor(weight))
+    return nn.BCEWithLogitsLoss(pos_weight=labels.new_tensor(weight), reduction="none")
+
+
+def weighted_loss(loss_fn: nn.BCEWithLogitsLoss, logits: Tensor, graph: ProjectGraph) -> Tensor:
+    losses = loss_fn(logits, graph.y)
+    weights = graph.loss_weight.to(dtype=losses.dtype)
+    return (losses * weights).sum() / weights.sum().clamp_min(1e-12)
+
+
+def select_f1_threshold(labels: np.ndarray, probabilities: np.ndarray) -> float:
+    """Select a deterministic F1 threshold using validation labels only."""
+    candidates = np.unique(np.concatenate([probabilities.astype(np.float64), np.asarray([0.5])]))
+    scores = np.asarray(
+        [f1_score(labels, probabilities >= threshold, zero_division=0) for threshold in candidates]
+    )
+    best_score = scores.max()
+    tied = candidates[np.isclose(scores, best_score)]
+    return float(tied[np.argmin(np.abs(tied - 0.5))])
 
 
 def train_with_validation(
@@ -175,12 +221,13 @@ def train_with_validation(
     train_graph: ProjectGraph,
     validation_graph: ProjectGraph,
     args: Any,
-) -> tuple[int, list[dict[str, Any]]]:
+) -> tuple[int, float, list[dict[str, Any]]]:
     """Select an epoch using one untouched inner-validation project."""
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    loss_fn = loss_function(train_graph.y)
+    loss_fn = loss_function(train_graph.y, train_graph.loss_weight)
     best_epoch = 1
     best_loss = float("inf")
+    best_state: dict[str, Tensor] | None = None
     stale_epochs = 0
     history: list[dict[str, Any]] = []
 
@@ -188,7 +235,7 @@ def train_with_validation(
         model.train()
         optimizer.zero_grad(set_to_none=True)
         train_logits = model(**model_inputs(train_graph))
-        train_loss = loss_fn(train_logits, train_graph.y)
+        train_loss = weighted_loss(loss_fn, train_logits, train_graph)
         train_loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()
@@ -196,7 +243,7 @@ def train_with_validation(
         model.eval()
         with torch.no_grad():
             validation_logits = model(**model_inputs(validation_graph))
-            validation_loss = loss_fn(validation_logits, validation_graph.y)
+            validation_loss = weighted_loss(loss_fn, validation_logits, validation_graph)
         history.append(
             {
                 "epoch": epoch,
@@ -204,25 +251,36 @@ def train_with_validation(
                 "validation_loss": float(validation_loss.item()),
             }
         )
+        print(
+            f"ndg_epoch={epoch:03d} train_loss={train_loss.item():.4f} "
+            f"val_loss={validation_loss.item():.4f}",
+            flush=True,
+        )
         if validation_loss.item() < best_loss - args.min_delta:
             best_loss = float(validation_loss.item())
             best_epoch = epoch
+            best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
             stale_epochs = 0
         else:
             stale_epochs += 1
         if stale_epochs >= args.patience:
             break
-    return best_epoch, history
+    if best_state is None:
+        raise RuntimeError("NDG epoch selection did not produce a checkpoint")
+    model.load_state_dict(best_state)
+    _, validation_probabilities, validation_labels = evaluate(model, validation_graph)
+    threshold = select_f1_threshold(validation_labels, validation_probabilities)
+    return best_epoch, threshold, history
 
 
 def retrain(model: NDGNodeClassifier, train_graph: ProjectGraph, epochs: int, args: Any) -> None:
     """Retrain a fresh model on all outer-training project graphs."""
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    loss_fn = loss_function(train_graph.y)
+    loss_fn = loss_function(train_graph.y, train_graph.loss_weight)
     for _ in range(epochs):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        loss = loss_fn(model(**model_inputs(train_graph)), train_graph.y)
+        loss = weighted_loss(loss_fn, model(**model_inputs(train_graph)), train_graph)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         optimizer.step()

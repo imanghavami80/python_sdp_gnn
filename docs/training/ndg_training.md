@@ -17,6 +17,7 @@ Represents one project NDG with:
 file names and source paths
 metric, AST, and CFG node features
 view-availability mask
+per-node training loss weight
 binary node labels
 typed edge index
 ```
@@ -35,7 +36,8 @@ and message direction.
 
 `combine_graphs` joins multiple project NDGs as disconnected components. Node
 offsets are applied to edges, but no artificial cross-project edge is created.
-This supports full-batch training over all outer-training projects.
+Each project receives equal total loss weight, so a large project cannot
+dominate optimization merely because it contains more files.
 
 ## Leakage-Safe Metric Transformation
 
@@ -50,8 +52,12 @@ No validation or test value influences fitted transformations.
 
 ## Optimization
 
-- `loss_function` computes positive-class weighting from training labels.
+- `loss_function` computes positive-class weighting using project-balanced
+  training weights.
+- `weighted_loss` combines class weighting with project-balanced node weights.
 - `train_with_validation` selects an epoch using validation loss and patience.
+- `select_f1_threshold` selects a decision threshold from the inner-validation
+  project after restoring the best epoch.
 - `retrain` fits a fresh model on all outer-training nodes for the selected
   number of epochs.
 - Gradient norms are clipped to improve training stability.
@@ -59,8 +65,9 @@ No validation or test value influences fitted transformations.
 ## Evaluation
 
 `evaluate` returns one embedding, probability, and label per file node.
-`binary_metrics` computes accuracy, precision, recall, F1, ROC-AUC, and PR-AUC
-at a fixed probability threshold of `0.5`. Ranking metrics are omitted when the
+`binary_metrics` computes accuracy, balanced accuracy, precision, recall, F1,
+MCC, ROC-AUC, PR-AUC, and Brier score. Threshold-dependent metrics use the
+inner-validation-selected threshold. Ranking metrics are omitted when the
 evaluated labels contain only one class.
 
 ## Correct Usage
@@ -69,4 +76,3 @@ evaluated labels contain only one class.
 - Apply `standardize_metrics` separately for each outer fold.
 - Never combine a held-out project into the disconnected training graph.
 - Preserve node ordering when writing predictions and embedding indexes.
-

@@ -57,6 +57,8 @@ After changing model or training code:
 3. Verify one prediction and embedding per held-out NDG node.
 4. Inspect `split.json` to confirm the outer test project is absent from every
    training set.
+5. Confirm each fold records a validation-selected decision threshold.
+6. Confirm combined training projects have equal total `loss_weight`.
 
 ## Expected Warnings
 
@@ -64,4 +66,3 @@ Recent Python versions may produce PyTorch Geometric deprecation warnings from
 type inspection. Warnings are not test failures, but dependency compatibility
 should be reviewed before upgrading to a Python version where the deprecated
 behavior is removed.
-

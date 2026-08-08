@@ -230,8 +230,11 @@ For every outer LOPO fold, the evaluator:
 4. Trains the AST and CFG encoders without the outer test project.
 5. Generates fold-specific AST and CFG embeddings.
 6. Combines metrics and available embeddings at each NDG file node.
-7. Trains the relational NDG model and predicts the held-out project.
-8. Repeats the process until every project has been tested once.
+7. Gives every training project equal total loss weight, preventing large
+   projects from dominating optimization.
+8. Selects the decision threshold using only the inner-validation project.
+9. Trains the relational NDG model and predicts the held-out project.
+10. Repeats the process until every project has been tested once.
 
 Main results:
 
@@ -243,18 +246,42 @@ outputs/promise/final_ndg_nested_lopo/fold_metrics.csv
 outputs/promise/final_ndg_nested_lopo/nested_lopo_summary.json
 ```
 
-`all_test_node_predictions.csv` contains the final label, probability, and
-prediction for every held-out file. `nested_lopo_summary.json` contains pooled
-and macro-project accuracy, precision, recall, F1, ROC-AUC, and PR-AUC, together
-with majority-class baseline results.
+`all_test_node_predictions.csv` contains the label, probability, selected
+threshold, and prediction for every held-out file. `nested_lopo_summary.json`
+contains pooled and macro-project classification, ranking, and calibration
+metrics together with majority-class baseline results.
+
+Report macro-project metrics as the primary cross-project result. In addition to
+accuracy and F1, inspect balanced accuracy, MCC, ROC-AUC, PR-AUC, and Brier
+score. Pooled metrics can be dominated by the largest project.
 
 To run a quick pilot on one held-out project before the complete experiment:
 
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py \
   --test-project log4j-1.1 \
+  --output-dir outputs/promise/pilot_log4j \
   --device cpu
 ```
+
+Use a separate pilot directory because the selected output directory is cleaned
+when evaluation starts.
+
+### Long Silent Stages
+
+Nested LOPO retrains and re-encodes AST and CFG graphs inside every outer fold.
+After an `early_stopping` message, the next operation may be an embedding pass
+over thousands of files rather than another epoch. Progress is reported as:
+
+```text
+fold=<project> stage=<stage> status=started
+ast_encoding batch=<current>/<total>
+cfg_encoding batch=<current>/<total>
+```
+
+MPS is not always faster for many small, irregular graphs. If MPS stops making
+batch progress, interrupt it and run the one-fold pilot with `--device cpu`.
+Keep `--num-workers 0` on macOS unless multiprocessing has been tested.
 
 ## Optional Standalone Experiments
 

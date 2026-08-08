@@ -66,11 +66,11 @@ There is no graph-level pooling because this is node-level prediction.
 Defines input dimensions, relation count, hidden/output dimensions, attention
 heads, layer count, and dropout.
 
-### `ViewProjector`
+### `ViewProjection`
 
 Maps one raw view into the common node space.
 
-### `MultiViewGate`
+### `GatedMultiViewFusion`
 
 Computes normalized weights over only the views available for each node.
 
@@ -100,4 +100,3 @@ The strict final consumer is `scripts/evaluate_ndg_nested_lopo.py`.
 - Add new dependency semantics as edge types, not arbitrary ordinal values.
 - Fit any transformation using only outer-training data.
 - Maintain view masks whenever a new optional file representation is added.
-

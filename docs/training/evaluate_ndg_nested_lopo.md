@@ -36,8 +36,10 @@ For each test project:
 6. Retrain fresh AST and CFG models on all outer-training projects.
 7. Generate embeddings for outer-training files and the untouched test project.
 8. Train and select the NDG model using the same inner project boundary.
-9. Retrain a fresh NDG on all outer-training projects.
-10. Predict and encode every file node in the outer test project.
+9. Select the F1 decision threshold on that inner-validation project.
+10. Retrain a fresh NDG on all outer-training projects with equal total loss
+    contribution from every project.
+11. Predict and encode every file node in the outer test project.
 
 This repeats until every project has been tested once, unless `--test-project`
 restricts the run.
@@ -51,9 +53,10 @@ The outer test project is excluded from:
 - NDG training and epoch selection.
 - Median imputation and standard scaling.
 - Class weighting and majority-baseline selection.
+- Decision-threshold selection.
 
-The classification threshold is fixed at `0.5`; it is not tuned on the test
-project.
+The threshold is selected independently inside every outer fold. The outer test
+project never influences it.
 
 ## Missing-View Policy
 
@@ -78,6 +81,7 @@ One-fold pilot:
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py \
   --test-project log4j-1.1 \
+  --output-dir outputs/promise/pilot_log4j \
   --device cpu
 ```
 
@@ -93,6 +97,25 @@ Main controls:
 
 The output directory is cleaned at startup. Safety checks reject broad targets
 such as the repository root, filesystem root, or home directory.
+
+## Runtime and Progress
+
+This is intentionally expensive: every outer fold independently trains AST,
+CFG, and NDG models and generates fold-specific embeddings. Reusing global AST
+or CFG embeddings would be faster but would violate the test-project boundary.
+
+Stage messages and periodic `ast_encoding` / `cfg_encoding` batch counters
+distinguish long encoding passes from a stalled process. A pause immediately
+after AST `early_stopping` normally means AST selection embeddings are being
+generated.
+
+On macOS:
+
+- Start with the one-fold CPU pilot.
+- Use MPS only if its batch counters advance faster than CPU.
+- Keep `--num-workers 0` as the safe default.
+- If no batch counter advances for an extended period, use `Ctrl+C` and restart
+  with `--device cpu` and a separate output directory.
 
 ## Outputs
 
@@ -123,14 +146,17 @@ folds/<test-project>/test_node_predictions.csv
 ## Metrics
 
 The summary contains pooled node metrics and unweighted macro-project mean,
-standard deviation, and median for accuracy, precision, recall, F1, ROC-AUC,
-and PR-AUC. It also reports a majority-class baseline fitted from each fold's
-outer-training labels.
+standard deviation, and median for accuracy, balanced accuracy, precision,
+recall, F1, MCC, ROC-AUC, PR-AUC, and Brier score. It also reports a
+majority-class baseline fitted from each fold's outer-training labels.
+
+Use macro-project results as the primary CPDP result. Pooled scores are
+secondary because projects contain very different numbers of files.
 
 ## Expected Result
 
 - Every evaluated file appears once, in the fold where its project was held out.
 - The final embedding matrix has one row per evaluated file node.
 - Fold split files prove project membership at each training boundary.
+- Every prediction records its fold-specific decision threshold.
 - The embedding index is the authoritative mapping from matrix rows to files.
-

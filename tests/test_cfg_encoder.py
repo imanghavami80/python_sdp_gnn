@@ -1,3 +1,6 @@
+import sys
+from pathlib import Path
+
 import pytest
 
 
@@ -5,6 +8,12 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("torch_geometric")
 
 from thesis_project.models import CFGEdgeAwareGATEncoder, CFGEncoderConfig, normalize_cfg_structural_features
+
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "scripts"
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from evaluate_cfg_lopo import extract_test_embeddings
 
 
 def test_cfg_structural_feature_normalization():
@@ -86,3 +95,30 @@ def test_cfg_edge_aware_gat_encoder_returns_graph_embeddings_and_attention():
     assert torch.isfinite(attention["edge_attention"]).all()
     assert torch.allclose(attention["node_attention"][batch == 0].sum(), torch.tensor(1.0), atol=1e-6)
     assert torch.allclose(attention["node_attention"][batch == 1].sum(), torch.tensor(1.0), atol=1e-6)
+
+
+def test_cfg_embedding_extraction_progress_loop_uses_batch_counter():
+    from torch_geometric.data import Data
+
+    class StubModel:
+        def eval(self):
+            return self
+
+        def encode(self, *args):
+            return torch.ones((1, 4), dtype=torch.float32)
+
+    batch = Data(
+        x=torch.zeros((1, 25)),
+        node_type_id=torch.zeros(1, dtype=torch.long),
+        stmt_kind_id=torch.zeros(1, dtype=torch.long),
+        invoke_kind_id=torch.zeros(1, dtype=torch.long),
+        edge_index=torch.zeros((2, 0), dtype=torch.long),
+        edge_type=torch.zeros(0, dtype=torch.long),
+        batch=torch.zeros(1, dtype=torch.long),
+        row_idx=torch.tensor([7]),
+    )
+
+    rows, embeddings = extract_test_embeddings(StubModel(), [batch], torch.device("cpu"), output_dim=4)
+
+    assert rows.tolist() == [7]
+    assert embeddings.shape == (1, 4)

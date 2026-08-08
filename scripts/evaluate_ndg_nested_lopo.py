@@ -8,6 +8,7 @@ import json
 import random
 import shutil
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -293,6 +294,8 @@ def train_ast_fold(
     assert_outer_boundary(graph_index, fit_indices, test_project, "AST selection")
     assert_outer_boundary(graph_index, outer_train_indices, test_project, "AST final")
 
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=ast_selection status=started graphs={len(fit_indices)}", flush=True)
     selection_model, config = build_ast_model(stage_args, len(vocab), device)
     train_loader = ast_pipeline.make_loader(
         ast_pipeline.ASTGraphDataset(graph_index, fit_indices, normalize_structural_features=True),
@@ -309,7 +312,14 @@ def train_ast_fold(
     best_state, history, best_info = ast_pipeline.train_model(
         selection_model, train_loader, validation_loader, labels, fit_indices, stage_args, device
     )
+    print(
+        f"fold={test_project} stage=ast_selection status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
     selection_model.load_state_dict(best_state)
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=ast_selection_encoding status=started", flush=True)
     selection_lookup = encode_ast(
         selection_model,
         graph_index,
@@ -317,16 +327,32 @@ def train_ast_fold(
         stage_args,
         device,
     )
+    print(
+        f"fold={test_project} stage=ast_selection_encoding status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
 
     set_seed(args.seed)
+    stage_started = time.perf_counter()
+    print(
+        f"fold={test_project} stage=ast_final status=started epochs={int(best_info['best_epoch'])}",
+        flush=True,
+    )
     final_model, config = build_ast_model(stage_args, len(vocab), device)
     train_ast_fixed(final_model, graph_index, outer_train_indices, int(best_info["best_epoch"]), stage_args, device)
+    print(f"fold={test_project} stage=ast_final_encoding status=started", flush=True)
     final_lookup = encode_ast(
         final_model,
         graph_index,
         np.concatenate([outer_train_indices, test_indices]),
         stage_args,
         device,
+    )
+    print(
+        f"fold={test_project} stage=ast_final status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
     )
     metadata = {"best_info": best_info, "history": history, "config": asdict(config)}
     return selection_lookup, final_lookup, final_model, config, metadata
@@ -386,6 +412,8 @@ def train_cfg_fold(
     assert_outer_boundary(graph_index, fit_indices, test_project, "CFG selection")
     assert_outer_boundary(graph_index, outer_train_indices, test_project, "CFG final")
 
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=cfg_selection status=started graphs={len(fit_indices)}", flush=True)
     selection_model, config = cfg_pipeline.build_model(
         stage_args, node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, device
     )
@@ -404,7 +432,14 @@ def train_cfg_fold(
     best_state, history, best_info = cfg_pipeline.train_model(
         selection_model, train_loader, validation_loader, labels, fit_indices, stage_args, device
     )
+    print(
+        f"fold={test_project} stage=cfg_selection status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
     selection_model.load_state_dict(best_state)
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=cfg_selection_encoding status=started", flush=True)
     selection_lookup = encode_cfg(
         selection_model,
         graph_index,
@@ -412,8 +447,18 @@ def train_cfg_fold(
         stage_args,
         device,
     )
+    print(
+        f"fold={test_project} stage=cfg_selection_encoding status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
 
     set_seed(args.seed)
+    stage_started = time.perf_counter()
+    print(
+        f"fold={test_project} stage=cfg_final status=started epochs={int(best_info['best_epoch'])}",
+        flush=True,
+    )
     final_model, config = cfg_pipeline.build_model(
         stage_args, node_vocab, stmt_vocab, invoke_vocab, edge_vocab, feature_names, device
     )
@@ -424,6 +469,11 @@ def train_cfg_fold(
         np.concatenate([outer_train_indices, test_indices]),
         stage_args,
         device,
+    )
+    print(
+        f"fold={test_project} stage=cfg_final status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
     )
     metadata = {"best_info": best_info, "history": history, "config": asdict(config)}
     return selection_lookup, final_lookup, final_model, config, metadata
@@ -487,6 +537,7 @@ def assemble_ndgs(
             ast_x=torch.from_numpy(ast_x),
             cfg_x=torch.from_numpy(cfg_x),
             view_mask=torch.from_numpy(mask),
+            loss_weight=torch.ones(len(base.names), dtype=torch.float32),
             y=torch.from_numpy(base.y),
             edge_index=torch.from_numpy(base.edge_index),
             edge_type=torch.from_numpy(base.edge_type),
@@ -575,12 +626,20 @@ def run_outer_fold(
     validation_graph = selection_graphs[validation_project]
     fit_graph, validation_graph = standardize_metrics(fit_graph, validation_graph)
     set_seed(args.seed + 2000 + fold_index)
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=ndg_selection status=started", flush=True)
     selection_ndg = make_model(ndg_config, device)
-    best_ndg_epoch, ndg_history = train_with_validation(
+    best_ndg_epoch, decision_threshold, ndg_history = train_with_validation(
         selection_ndg,
         fit_graph.to(device),
         validation_graph.to(device),
         ndg_args(args),
+    )
+    print(
+        f"fold={test_project} stage=ndg_selection status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f} best_epoch={best_ndg_epoch} "
+        f"threshold={decision_threshold:.4f}",
+        flush=True,
     )
 
     final_graphs = assemble_ndgs(
@@ -594,13 +653,26 @@ def run_outer_fold(
     test_graph = final_graphs[test_project]
     full_train, test_graph = standardize_metrics(full_train, test_graph)
     set_seed(args.seed + 3000 + fold_index)
+    stage_started = time.perf_counter()
+    print(f"fold={test_project} stage=ndg_final status=started epochs={best_ndg_epoch}", flush=True)
     final_ndg = make_model(ndg_config, device)
     retrain(final_ndg, full_train.to(device), best_ndg_epoch, ndg_args(args))
     embeddings, probabilities, labels = evaluate(final_ndg, test_graph.to(device))
-    metrics = binary_metrics(labels, probabilities)
+    print(
+        f"fold={test_project} stage=ndg_final status=finished "
+        f"seconds={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
+    model_predictions = (probabilities >= decision_threshold).astype(np.int64)
+    metrics = binary_metrics(labels, probabilities, decision_threshold, model_predictions)
     majority_label = int(full_train.y.float().mean().item() >= 0.5)
     baseline_probabilities = np.full(len(labels), float(majority_label), dtype=np.float32)
-    baseline_metrics = binary_metrics(labels, baseline_probabilities)
+    baseline_predictions = np.full(len(labels), majority_label, dtype=np.int64)
+    baseline_metrics = binary_metrics(
+        labels,
+        baseline_probabilities,
+        predictions=baseline_predictions,
+    )
 
     split = {
         "outer_test_project": test_project,
@@ -610,6 +682,7 @@ def run_outer_fold(
         "test_project_used_by_ast_training": False,
         "test_project_used_by_cfg_training": False,
         "test_project_used_by_ndg_training": False,
+        "test_project_used_for_threshold_selection": False,
     }
     (fold_dir / "split.json").write_text(json.dumps(split, indent=2), encoding="utf-8")
     pd.DataFrame(ast_meta["history"]).to_csv(fold_dir / "ast_selection_history.csv", index=False)
@@ -641,6 +714,7 @@ def run_outer_fold(
             "outer_train_projects": outer_train_projects,
             "inner_validation_project": validation_project,
             "selected_epochs": best_ndg_epoch,
+            "decision_threshold": decision_threshold,
             "protocol": "strict_nested_LOPO",
         },
         fold_dir / "ndg_encoder.pt",
@@ -653,9 +727,10 @@ def run_outer_fold(
             "source_path": test_graph.source_paths,
             "label": labels,
             "probability": probabilities,
-            "prediction": (probabilities >= 0.5).astype(np.int64),
+            "decision_threshold": decision_threshold,
+            "prediction": model_predictions,
             "baseline_probability": baseline_probabilities,
-            "baseline_prediction": majority_label,
+            "baseline_prediction": baseline_predictions,
             "has_ast": test_graph.view_mask[:, 1].cpu().numpy().astype(np.int64),
             "has_cfg": test_graph.view_mask[:, 2].cpu().numpy().astype(np.int64),
         }
@@ -669,23 +744,39 @@ def run_outer_fold(
         "ast_selected_epochs": int(ast_meta["best_info"]["best_epoch"]),
         "cfg_selected_epochs": int(cfg_meta["best_info"]["best_epoch"]),
         "ndg_selected_epochs": int(best_ndg_epoch),
+        "decision_threshold": decision_threshold,
         **{f"model_{key}": value for key, value in metrics.items()},
         **{f"baseline_{key}": value for key, value in baseline_metrics.items()},
     }
     return fold_row, predictions, embeddings
 
 
-def safe_pooled_metrics(predictions: pd.DataFrame, probability_column: str) -> dict[str, float | None]:
+def safe_pooled_metrics(
+    predictions: pd.DataFrame,
+    probability_column: str,
+    prediction_column: str,
+) -> dict[str, float | None]:
     return binary_metrics(
         predictions["label"].to_numpy(dtype=np.int64),
         predictions[probability_column].to_numpy(dtype=np.float32),
+        predictions=predictions[prediction_column].to_numpy(dtype=np.int64),
     )
 
 
 def aggregate_fold_metrics(fold_metrics: pd.DataFrame, prefix: str) -> dict[str, dict[str, float | int | None]]:
     """Summarize project-level performance without weighting large projects more."""
     summary: dict[str, dict[str, float | int | None]] = {}
-    for metric in ("accuracy", "precision", "recall", "f1", "roc_auc", "pr_auc"):
+    for metric in (
+        "accuracy",
+        "balanced_accuracy",
+        "precision",
+        "recall",
+        "f1",
+        "mcc",
+        "roc_auc",
+        "pr_auc",
+        "brier_score",
+    ):
         values = pd.to_numeric(fold_metrics[f"{prefix}_{metric}"], errors="coerce").dropna()
         summary[metric] = {
             "mean": float(values.mean()) if not values.empty else None,
@@ -819,9 +910,14 @@ def main() -> None:
             "CFG training and epoch selection",
             "NDG training and epoch selection",
             "metric normalization",
+            "decision-threshold selection",
         ],
-        "model_pooled_metrics": safe_pooled_metrics(all_predictions, "probability"),
-        "baseline_pooled_metrics": safe_pooled_metrics(all_predictions, "baseline_probability"),
+        "model_pooled_metrics": safe_pooled_metrics(all_predictions, "probability", "prediction"),
+        "baseline_pooled_metrics": safe_pooled_metrics(
+            all_predictions,
+            "baseline_probability",
+            "baseline_prediction",
+        ),
         "model_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "model"),
         "baseline_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "baseline"),
         "ndg_encoder_config": asdict(ndg_config),
@@ -830,7 +926,8 @@ def main() -> None:
         "ast_fallback_graphs": ast_fallback_count,
         "metric_transform": "training-fold median imputation followed by training-fold standard scaling",
         "random_seed": args.seed,
-        "classification_threshold": 0.5,
+        "classification_threshold": "selected on the inner-validation project independently per outer fold",
+        "training_project_weighting": "equal total loss contribution per outer-training project",
     }
     (output_dir / "nested_lopo_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"node_embeddings={embeddings_path}", flush=True)
