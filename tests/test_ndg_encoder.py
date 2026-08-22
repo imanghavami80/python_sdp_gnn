@@ -16,10 +16,16 @@ if str(SCRIPTS_ROOT) not in sys.path:
 import pandas as pd
 
 from evaluate_ndg_nested_lopo import assert_outer_boundary, choose_validation_project, project_indices
-from thesis_project.training import ProjectGraph, combine_graphs, select_f1_threshold, standardize_metrics
+from thesis_project.training import (
+    ProjectGraph,
+    binary_metrics,
+    combine_graphs,
+    select_f1_threshold,
+    standardize_metrics,
+)
 
 
-def make_config() -> NDGEncoderConfig:
+def make_config(fusion_stage: str = "early") -> NDGEncoderConfig:
     return NDGEncoderConfig(
         metrics_dim=20,
         ast_dim=16,
@@ -32,6 +38,7 @@ def make_config() -> NDGEncoderConfig:
         heads=4,
         dropout=0.0,
         attention_dropout=0.0,
+        fusion_stage=fusion_stage,
     )
 
 
@@ -64,6 +71,20 @@ def test_ndg_classifier_returns_node_logits() -> None:
     model = NDGNodeClassifier(NDGMultiViewRelationalGATEncoder(make_config()), dropout=0.0)
     logits = model(**graph_inputs())
     assert logits.shape == (5,)
+
+
+def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
+    encoder = NDGMultiViewRelationalGATEncoder(make_config("late"))
+    encoder.eval()
+    inputs = graph_inputs()
+    _, first_attention = encoder(**inputs, return_attention=True)
+    inputs["ast_x"] = inputs["ast_x"] * 100.0
+    inputs["cfg_x"] = inputs["cfg_x"] * -100.0
+    _, second_attention = encoder(**inputs, return_attention=True)
+
+    assert torch.allclose(
+        first_attention["ndg_embeddings"], second_attention["ndg_embeddings"], atol=1e-6
+    )
 
 
 def test_metrics_view_is_required() -> None:
@@ -151,3 +172,12 @@ def test_validation_threshold_maximizes_f1_without_forcing_half() -> None:
     threshold = select_f1_threshold(labels, probabilities)
 
     assert threshold == pytest.approx(0.35)
+
+
+def test_g_mean_uses_sensitivity_and_specificity() -> None:
+    metrics = binary_metrics(
+        torch.tensor([0, 0, 1, 1]).numpy(),
+        torch.tensor([0.1, 0.9, 0.8, 0.7]).numpy(),
+    )
+
+    assert metrics["g_mean"] == pytest.approx(0.5 ** 0.5)

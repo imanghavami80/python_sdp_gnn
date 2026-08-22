@@ -74,7 +74,7 @@ python scripts/extract_promise_cfg.py
 Useful options:
 
 ```bash
-python scripts/extract_promise_cfg.py --dataset-name log4j-1.1
+python scripts/extract_promise_cfg.py --dataset-name log4j-1.2
 python scripts/extract_promise_cfg.py --build-dir path/to/build-cache
 python scripts/extract_promise_cfg.py --help
 ```

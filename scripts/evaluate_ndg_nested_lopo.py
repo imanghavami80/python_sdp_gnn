@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--heads", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--attention-dropout", type=float, default=0.15)
+    parser.add_argument(
+        "--fusion-stage",
+        choices=["early", "late"],
+        default="early",
+        help="Fuse AST/CFG before NDG propagation (current implementation) or after independent NDG encoding (proposal).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--num-workers", type=int, default=0)
@@ -773,6 +779,7 @@ def aggregate_fold_metrics(fold_metrics: pd.DataFrame, prefix: str) -> dict[str,
         "recall",
         "f1",
         "mcc",
+        "g_mean",
         "roc_auc",
         "pr_auc",
         "brier_score",
@@ -847,6 +854,7 @@ def main() -> None:
         heads=args.heads,
         dropout=args.dropout,
         attention_dropout=args.attention_dropout,
+        fusion_stage=args.fusion_stage,
     )
     print(
         f"Strict nested LOPO started: outer_folds={len(selected_test_projects)} projects={len(all_projects)} "

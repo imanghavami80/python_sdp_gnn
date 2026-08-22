@@ -14,8 +14,8 @@ multi-project dataset.
 By default, projects are discovered from:
 
 ```text
-projects/<project>/<dataset>.csv
-projects/<project>/<Java source tree>
+projects_new/<project>/<dataset>.csv
+projects_new/<project>/<Java source tree>
 ```
 
 Each CSV must contain a unique, non-empty `name`, a `bug` count, and these 20
@@ -28,13 +28,14 @@ wmc dit noc cbo rfc lcom ca ce npm lcom3 loc dam moa mfa cam ic cbm amc max_cc a
 ## Processing
 
 1. Discover all project CSV files or read explicit project arguments.
-2. Validate column names and reject duplicate class names.
-3. Convert every metric to numeric form.
-4. Convert `bug` to `0` when the count is zero and `1` otherwise.
-5. Apply `log1p` to non-negative metrics.
-6. Index Java files by package-qualified class name.
-7. Match each PROMISE class to exactly one source file.
-8. Write per-project and combined datasets and mapping reports.
+2. Normalize duplicate `name` headers and select the qualified-class column.
+3. Validate column names and reject duplicate class names.
+4. Convert every metric to numeric form.
+5. Convert `bug` to `0` when the count is zero and `1` otherwise.
+6. Apply `log1p` to non-negative metrics.
+7. Index Java files by package-qualified class name.
+8. Match each PROMISE class to exactly one source file.
+9. Write per-project and combined datasets and mapping reports.
 
 Packaged classes are never resolved using only a simple class name. Ambiguous
 qualified or simple names remain unmapped instead of being assigned to an
@@ -62,9 +63,9 @@ Useful options:
 ```bash
 # Process one explicitly located project
 python scripts/preprocess_promise.py \
-  --dataset-name log4j-1.1 \
-  --csv-path projects/log4j/log4j-1.1.csv \
-  --source-root projects/log4j
+  --dataset-name log4j-1.2 \
+  --csv-path projects_new/Log4j/log4j-1.2.csv \
+  --source-root projects_new/Log4j/log4j-1.2
 
 # Inspect all options
 python scripts/preprocess_promise.py --help
@@ -103,4 +104,3 @@ binary `bug`, `source_path`, and `match_strategy`.
 
 AST, CFG, and NDG extraction all consume
 `outputs/promise/promise_preprocessed_log1p.csv` by default.
-

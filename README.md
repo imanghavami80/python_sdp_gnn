@@ -10,9 +10,14 @@ sources of software information:
 - **NDG:** typed dependencies between files in the same project.
 
 The final model performs **node-level prediction on each project NDG**. Every
-NDG node represents one Java file and receives its metrics, AST embedding, and
-CFG embedding. The output is one defect probability and one learned embedding
-per file.
+NDG node represents one Java file. Two controlled fusion variants are available:
+
+- `early` (implementation design): metrics, AST, and CFG initialize each NDG
+  node before dependency message passing.
+- `late` (proposal design): the NDG learns from metrics and dependencies first;
+  its node embedding is then fused with independent AST and CFG embeddings.
+
+Both variants output one defect probability and one learned embedding per file.
 
 ## Pipeline Overview
 
@@ -44,14 +49,15 @@ Software metrics + AST embedding + CFG embedding
  Defect probability and embedding for every file
 ```
 
-The final evaluation uses strict nested Leave-One-Project-Out (LOPO). One whole
-project is held out for testing, so files from that project cannot influence
-training, normalization, or epoch selection.
+The project uses strict nested Leave-One-Project-Out (LOPO) as its primary
+leakage-safe evaluation. One complete project is held out for testing, so its
+files cannot influence training, normalization, or model selection.
 
 ## Repository Layout
 
 ```text
-projects/                  PROMISE CSV files and Java project source code
+projects_new/              12-project PROMISE benchmark and Java source code
+projects_old/              Previous dataset releases; not used by default
 scripts/                   Preprocessing, extraction, and evaluation commands
 docs/                      File-by-file developer documentation
 src/thesis_project/models/ AST, CFG, and NDG model implementations
@@ -91,19 +97,21 @@ pytest
 
 ## Input Data
 
-Each project directory under `projects/` contains one PROMISE CSV and the
+Each project directory under `projects_new/` contains one PROMISE CSV and the
 corresponding Java source tree. For example:
 
 ```text
-projects/
-  log4j/
-    log4j-1.1.csv
+projects_new/
+  Log4j/
+    log4j-1.2.csv
     <Java source directories>
 ```
 
 The CSV must contain `name`, `bug`, and the expected 20 software metric
 columns. `name` should identify the package-qualified Java class. The
-preprocessor automatically discovers CSV files under `projects/*/*.csv`.
+preprocessor automatically discovers CSV files under `projects_new/*/*.csv`.
+It handles the benchmark layout that repeats the `name` header for project
+metadata and the qualified Java class.
 
 ## Run the Complete Pipeline
 
@@ -236,6 +244,10 @@ For every outer LOPO fold, the evaluator:
 9. Trains the relational NDG model and predicts the held-out project.
 10. Repeats the process until every project has been tested once.
 
+Use `--fusion-stage early` for the implementation design or
+`--fusion-stage late` for the proposal design. Write them to separate output
+directories and report both as a predeclared ablation.
+
 Main results:
 
 ```text
@@ -259,7 +271,7 @@ To run a quick pilot on one held-out project before the complete experiment:
 
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py \
-  --test-project log4j-1.1 \
+  --test-project log4j-1.2 \
   --output-dir outputs/promise/pilot_log4j \
   --device cpu
 ```
@@ -308,7 +320,8 @@ because that would leak information from held-out projects.
 - **AST encoder:** GIN with node-type embeddings and attention pooling.
 - **CFG encoder:** edge-aware GATv2 with node, statement, invocation, and CFG
   edge types, followed by attention pooling.
-- **NDG encoder:** multi-view relational GATv2 operating at file-node level.
+- **NDG encoder:** relational GATv2 with selectable early or late multi-view
+  fusion at file-node level.
 
 Attention weights can provide an approximate indication of influential nodes,
 but they should not be treated as exact causal explanations.
@@ -319,8 +332,8 @@ Place its PROMISE CSV and Java source code under one project directory, then
 rerun the pipeline from preprocessing:
 
 ```text
-projects/<project-name>/<dataset-name>.csv
-projects/<project-name>/<source-tree>/...
+projects_new/<project-name>/<dataset-name>.csv
+projects_new/<project-name>/<source-tree>/...
 ```
 
 For a source tree stored elsewhere, pass it explicitly:

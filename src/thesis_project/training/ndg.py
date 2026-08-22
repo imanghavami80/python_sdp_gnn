@@ -12,6 +12,7 @@ from sklearn.metrics import (
     average_precision_score,
     balanced_accuracy_score,
     brier_score_loss,
+    confusion_matrix,
     f1_score,
     matthews_corrcoef,
     precision_score,
@@ -169,6 +170,9 @@ def binary_metrics(
         raise ValueError("threshold must be in [0, 1]")
     if predictions is None:
         predictions = (probabilities >= threshold).astype(np.int64)
+    tn, fp, fn, tp = confusion_matrix(y_true, predictions, labels=[0, 1]).ravel()
+    specificity = float(tn / (tn + fp)) if tn + fp else 0.0
+    sensitivity = float(tp / (tp + fn)) if tp + fn else 0.0
     result: dict[str, float | None] = {
         "accuracy": float(accuracy_score(y_true, predictions)),
         "balanced_accuracy": float(balanced_accuracy_score(y_true, predictions)),
@@ -176,6 +180,7 @@ def binary_metrics(
         "recall": float(recall_score(y_true, predictions, zero_division=0)),
         "f1": float(f1_score(y_true, predictions, zero_division=0)),
         "mcc": float(matthews_corrcoef(y_true, predictions)),
+        "g_mean": float(np.sqrt(sensitivity * specificity)),
         "brier_score": float(brier_score_loss(y_true, probabilities)),
     }
     if len(np.unique(y_true)) == 2:

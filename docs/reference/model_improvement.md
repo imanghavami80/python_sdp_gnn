@@ -11,6 +11,9 @@ The final nested LOPO pipeline now addresses two high-impact CPDP problems:
 
 Both changes preserve the outer-test boundary.
 
+The proposal's late fusion and implementation's early fusion are both exposed
+through `--fusion-stage`, making the design choice a controlled ablation.
+
 ## Evaluation Priority
 
 Use metrics in this order:
@@ -51,3 +54,11 @@ done
 ```
 
 Never select the best seed. Aggregate all seeds.
+
+## Training Time Is Not a Quality Metric
+
+A 15-minute run is not evidence of under-training. Hardware, graph batching,
+and model size determine wall-clock time. Diagnose learning from training and
+validation curves, selected epochs, multiple-seed variance, and held-out
+metrics. Increase epochs or capacity only when those measurements show
+underfitting; longer training can otherwise overfit source projects.

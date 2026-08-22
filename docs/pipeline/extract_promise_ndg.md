@@ -56,7 +56,7 @@ python scripts/extract_promise_ndg.py
 Useful options:
 
 ```bash
-python scripts/extract_promise_ndg.py --dataset-name log4j-1.1
+python scripts/extract_promise_ndg.py --dataset-name log4j-1.2
 python scripts/extract_promise_ndg.py --output-dir path/to/ndg-output
 python scripts/extract_promise_ndg.py --help
 ```

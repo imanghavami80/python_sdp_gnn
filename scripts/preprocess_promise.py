@@ -138,6 +138,17 @@ def validate_project_frame(dataset_name: str, df: pd.DataFrame) -> None:
         raise ValueError(f"{dataset_name}: duplicate class names are unsupported: {duplicates[:10]}")
 
 
+def normalize_promise_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Select the qualified-class column from common PROMISE CSV layouts."""
+    normalized = df.copy()
+    # Several benchmark files start with project ``name`` and ``version``
+    # metadata, then repeat ``name`` for the class. Pandas disambiguates the
+    # prediction-unit column as ``name.1``.
+    if "name.1" in normalized.columns:
+        normalized["name"] = normalized["name.1"]
+    return normalized
+
+
 def discover_projects(projects_root: Path) -> list[ProjectSpec]:
     specs: list[ProjectSpec] = []
     for csv_path in sorted(projects_root.glob("*/*.csv")):
@@ -175,7 +186,7 @@ def load_raw_projects(specs: list[ProjectSpec]) -> list[pd.DataFrame]:
             raise FileNotFoundError(f"{spec.dataset_name}: missing CSV file: {spec.csv_path}")
         if not spec.source_root.exists():
             raise FileNotFoundError(f"{spec.dataset_name}: missing source root: {spec.source_root}")
-        df = pd.read_csv(spec.csv_path)
+        df = normalize_promise_schema(pd.read_csv(spec.csv_path))
         validate_project_frame(spec.dataset_name, df)
         df = df[EXPECTED_COLUMNS].copy()
         df.insert(0, "dataset_name", spec.dataset_name)
@@ -363,7 +374,7 @@ def write_outputs(results: list[PreprocessResult], output_root: Path, scaler_nam
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Preprocess PROMISE Java SDP datasets.")
-    parser.add_argument("--projects-root", type=Path, default=Path("projects"))
+    parser.add_argument("--projects-root", type=Path, default=Path("projects_new"))
     parser.add_argument("--output-root", type=Path, default=Path("outputs"))
     parser.add_argument(
         "--scaler",

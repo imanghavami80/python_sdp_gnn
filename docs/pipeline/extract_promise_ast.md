@@ -60,7 +60,7 @@ Useful options:
 
 ```bash
 # Extract only one project
-python scripts/extract_promise_ast.py --dataset-name log4j-1.1
+python scripts/extract_promise_ast.py --dataset-name log4j-1.2
 
 # Use custom locations
 python scripts/extract_promise_ast.py \

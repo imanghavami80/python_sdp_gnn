@@ -22,21 +22,29 @@ For one project graph or disconnected training projects:
 The metric view is always available. AST fallback and CFG placeholder views are
 masked by the final evaluator unless explicitly configured otherwise.
 
-## Multi-View Fusion
+## Multi-View Fusion Variants
 
 Each view has an independent projection network that maps it into a common
 hidden dimension. A learned gate scores the available views for each file. A
 masked softmax converts those scores to weights, and unavailable views receive
 zero weight.
 
-Conceptually:
+The default `early` variant is the implementation design:
 
 ```text
 file_state = gate(metrics, AST, CFG)
+file_embedding = NDG_GNN(file_state, dependencies)
 ```
 
-This is preferable to blind concatenation because files can legitimately lack a
-reliable AST or CFG view.
+The `late` variant implements the proposal design:
+
+```text
+ndg_embedding = NDG_GNN(metrics, dependencies)
+file_embedding = gate(ndg_embedding, AST_embedding, CFG_embedding)
+```
+
+In late fusion, AST/CFG inputs cannot change the independently learned NDG
+embedding. Both variants use masked gating for unavailable AST or CFG views.
 
 ## Relational Message Passing
 
@@ -50,10 +58,11 @@ an `EXTENDS` edge can influence attention differently from `METHOD_CALL`,
 
 ## Architecture
 
-1. Project metrics, AST, and CFG independently.
-2. Apply masked per-file view gating.
-3. Embed typed forward and inverse NDG relations.
-4. Apply stacked residual edge-aware GATv2 layers.
+1. Project the inputs required by the selected fusion stage.
+2. Embed typed forward and inverse NDG relations.
+3. Apply stacked residual edge-aware GATv2 layers.
+4. Fuse before message passing (`early`) or after independent NDG encoding
+   (`late`).
 5. Normalize and project each contextual file state.
 6. Apply the node classifier to produce one defect logit per file.
 

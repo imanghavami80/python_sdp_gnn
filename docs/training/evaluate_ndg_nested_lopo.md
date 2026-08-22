@@ -10,6 +10,9 @@ defect probability and final contextual embedding per held-out file node.
 
 Precomputed global or standalone LOPO embeddings are not consumed.
 
+`--fusion-stage early|late` turns the implementation and proposal designs into
+a controlled ablation while preserving every split and leakage boundary.
+
 ## Inputs
 
 The script requires completed AST, CFG, and NDG extraction:
@@ -70,7 +73,7 @@ file.
 
 ## Run
 
-Full ten-project evaluation:
+Full twelve-project evaluation:
 
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py --device cpu
@@ -80,7 +83,7 @@ One-fold pilot:
 
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py \
-  --test-project log4j-1.1 \
+  --test-project log4j-1.2 \
   --output-dir outputs/promise/pilot_log4j \
   --device cpu
 ```
@@ -92,7 +95,7 @@ Main controls:
 --ast-batch-size --cfg-batch-size --lr --weight-decay
 --hidden-dim --embedding-dim --ast-layers --cfg-layers
 --ndg-layers --heads --dropout --attention-dropout
---seed --device --test-project
+--fusion-stage --seed --device --test-project
 ```
 
 The output directory is cleaned at startup. Safety checks reject broad targets
@@ -147,7 +150,7 @@ folds/<test-project>/test_node_predictions.csv
 
 The summary contains pooled node metrics and unweighted macro-project mean,
 standard deviation, and median for accuracy, balanced accuracy, precision,
-recall, F1, MCC, ROC-AUC, PR-AUC, and Brier score. It also reports a
+recall, F1, MCC, G-Mean, ROC-AUC, PR-AUC, and Brier score. It also reports a
 majority-class baseline fitted from each fold's outer-training labels.
 
 Use macro-project results as the primary CPDP result. Pooled scores are

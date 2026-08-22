@@ -24,6 +24,7 @@ class NDGEncoderConfig:
     heads: int = 4
     dropout: float = 0.25
     attention_dropout: float = 0.15
+    fusion_stage: str = "early"
 
     def __post_init__(self) -> None:
         for name in ("metrics_dim", "ast_dim", "cfg_dim", "num_edge_types", "hidden_dim", "output_dim"):
@@ -39,6 +40,8 @@ class NDGEncoderConfig:
             raise ValueError("dropout must be in [0, 1)")
         if not 0.0 <= self.attention_dropout < 1.0:
             raise ValueError("attention_dropout must be in [0, 1)")
+        if self.fusion_stage not in {"early", "late"}:
+            raise ValueError("fusion_stage must be 'early' or 'late'")
 
 
 class ViewProjection(nn.Module):
@@ -59,7 +62,7 @@ class ViewProjection(nn.Module):
 
 
 class GatedMultiViewFusion(nn.Module):
-    """Weight and combine available metric, AST, and CFG file views."""
+    """Weight and combine three available file-level representations."""
 
     NUM_VIEWS = 3
 
@@ -99,7 +102,7 @@ class GatedMultiViewFusion(nn.Module):
                 f"view_mask must have shape {(metrics_x.size(0), self.NUM_VIEWS)}, received {tuple(view_mask.shape)}"
             )
         if not torch.all(view_mask[:, 0]):
-            raise ValueError("The metrics view must be available for every NDG node")
+            raise ValueError("The primary view must be available for every NDG node")
 
         inputs = (metrics_x, ast_x, cfg_x)
         projected = torch.stack(
@@ -128,6 +131,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             hidden_dim=config.hidden_dim,
             dropout=config.dropout,
         )
+        self.metrics_projection = ViewProjection(config.metrics_dim, config.hidden_dim, config.dropout)
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
         head_dim = config.hidden_dim // config.heads
         self.convs = nn.ModuleList(
@@ -149,6 +153,19 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
         self.output_projection = nn.Sequential(
             nn.Linear((config.num_layers + 1) * config.hidden_dim, config.output_dim),
+            nn.GELU(),
+            nn.Dropout(config.dropout),
+            nn.LayerNorm(config.output_dim),
+        )
+        self.late_fusion = GatedMultiViewFusion(
+            metrics_dim=config.output_dim,
+            ast_dim=config.ast_dim,
+            cfg_dim=config.cfg_dim,
+            hidden_dim=config.hidden_dim,
+            dropout=config.dropout,
+        )
+        self.late_output_projection = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.output_dim),
             nn.GELU(),
             nn.Dropout(config.dropout),
             nn.LayerNorm(config.output_dim),
@@ -183,7 +200,16 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         if edge_type.numel() and (edge_type.min() < 0 or edge_type.max() >= self.config.num_edge_types):
             raise ValueError("edge_type contains an id outside the configured vocabulary")
 
-        h, view_weights = self.fusion(metrics_x, ast_x, cfg_x, view_mask)
+        if not torch.all(view_mask[:, 0]):
+            raise ValueError("The metrics view must be available for every NDG node")
+        if self.config.fusion_stage == "early":
+            h, view_weights = self.fusion(metrics_x, ast_x, cfg_x, view_mask)
+        else:
+            # The NDG representation is learned from metrics and dependencies
+            # without seeing AST/CFG.  Those independent graph embeddings are
+            # fused only after NDG message passing, matching the proposal.
+            h = self.metrics_projection(metrics_x)
+            view_weights = metrics_x.new_zeros((num_nodes, 3))
         layer_outputs = [h]
         edge_attr = self.edge_type_embedding(edge_type.long())
         attention: dict[str, Tensor] = {"view_weights": view_weights.detach()}
@@ -204,7 +230,14 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             h = norm(residual + self.dropout(self.activation(updated)))
             layer_outputs.append(h)
 
-        embeddings = self.output_projection(torch.cat(layer_outputs, dim=-1))
+        ndg_embeddings = self.output_projection(torch.cat(layer_outputs, dim=-1))
+        if self.config.fusion_stage == "late":
+            fused, view_weights = self.late_fusion(ndg_embeddings, ast_x, cfg_x, view_mask)
+            embeddings = self.late_output_projection(fused)
+            attention["view_weights"] = view_weights.detach()
+            attention["ndg_embeddings"] = ndg_embeddings.detach()
+        else:
+            embeddings = ndg_embeddings
         if return_attention:
             return embeddings, attention
         return embeddings

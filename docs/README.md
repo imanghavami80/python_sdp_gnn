@@ -44,7 +44,7 @@ specific stage.
 
 ## Leakage Boundary
 
-Only `evaluate_ndg_nested_lopo.py` is the final research evaluation. It trains
+`evaluate_ndg_nested_lopo.py` is the primary leakage-safe research evaluation. It trains
 AST, CFG, and NDG models inside every outer project fold. Outputs from the
 standalone AST and CFG scripts are useful for diagnostics, but must not replace
 fold-specific embeddings in the final experiment.

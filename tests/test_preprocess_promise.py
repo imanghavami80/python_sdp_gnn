@@ -8,7 +8,7 @@ SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from preprocess_promise import map_class_to_file, validate_project_frame
+from preprocess_promise import map_class_to_file, normalize_promise_schema, validate_project_frame
 
 
 def test_packaged_class_does_not_use_simple_name_fallback(tmp_path: Path) -> None:
@@ -50,3 +50,13 @@ def test_duplicate_dataset_class_names_are_rejected() -> None:
     }
     with pytest.raises(ValueError, match="duplicate class names"):
         validate_project_frame("sample", pd.DataFrame(columns))
+
+
+def test_duplicate_name_header_uses_qualified_class_column() -> None:
+    frame = pd.DataFrame(
+        {"name": ["ant"], "version": ["1.7"], "name.1": ["org.example.Widget"]}
+    )
+
+    normalized = normalize_promise_schema(frame)
+
+    assert normalized.loc[0, "name"] == "org.example.Widget"

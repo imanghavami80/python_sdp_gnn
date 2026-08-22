@@ -66,7 +66,7 @@ No validation or test value influences fitted transformations.
 
 `evaluate` returns one embedding, probability, and label per file node.
 `binary_metrics` computes accuracy, balanced accuracy, precision, recall, F1,
-MCC, ROC-AUC, PR-AUC, and Brier score. Threshold-dependent metrics use the
+MCC, G-Mean, ROC-AUC, PR-AUC, and Brier score. Threshold-dependent metrics use the
 inner-validation-selected threshold. Ranking metrics are omitted when the
 evaluated labels contain only one class.
 

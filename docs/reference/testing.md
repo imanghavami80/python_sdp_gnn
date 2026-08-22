@@ -36,7 +36,7 @@ classifier shapes, and attention outputs.
 
 ### `tests/test_ndg_encoder.py`
 
-Checks multi-view masking, node-level output shape, reverse relations, outer
+Checks multi-view masking, early/late fusion behavior, node-level output shape, reverse relations, outer
 project leakage guards, validation-project suitability, and training-only metric
 transformation.
 
