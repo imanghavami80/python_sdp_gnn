@@ -1,5 +1,6 @@
 # Existing folders to keep out of version control
-projects/
+projects_old/
+projects_new/
 proposal/
 outputs/
 
