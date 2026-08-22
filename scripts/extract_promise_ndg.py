@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Extract project-level Network Dependency Graphs for PROMISE Java SDP datasets.
-
-Default input:
-    outputs/promise/promise_preprocessed_standard.csv
-
-Default output:
-    outputs/promise/ndg/
-
-The extractor creates one directed multi-relational NDG per PROMISE dataset. Each
-node is one mapped Java class/file from the preprocessed dataset, and node
-features are the preprocessed software metric columns only.
-"""
+"""Extract one typed file-level dependency graph per PROMISE project."""
 
 from __future__ import annotations
 
@@ -18,7 +7,7 @@ import argparse
 import json
 import re
 import shutil
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -128,7 +117,9 @@ class TypeResolver:
         if self.package:
             candidates.append(f"{self.package}.{name}")
         candidates.extend(f"{prefix}.{name}" for prefix in self.wildcard_imports)
-        candidates.extend(sorted(self.simple_to_types.get(name.split(".")[-1], set())))
+        simple_matches = self.simple_to_types.get(name.split(".")[-1], set())
+        if len(simple_matches) == 1:
+            candidates.extend(simple_matches)
 
         for candidate in candidates:
             current = candidate
@@ -287,25 +278,6 @@ def extract_file_dependencies(
 
     for _, creator in tree.filter(javalang.tree.ClassCreator):
         emit_type_dependencies(collector, resolver, source_name, creator.type, "OBJECT_CREATION")
-
-
-def mermaid_preview(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], limit: int = 16) -> str:
-    degree = Counter()
-    for edge in edges:
-        degree[edge["source"]] += 1
-        degree[edge["target"]] += 1
-    selected = {node_id for node_id, _ in degree.most_common(limit)}
-    if not selected:
-        selected = {node["id"] for node in nodes[: min(limit, len(nodes))]}
-    selected_edges = [edge for edge in edges if edge["source"] in selected and edge["target"] in selected][:45]
-    node_by_id = {node["id"]: node for node in nodes}
-    lines = ["graph LR"]
-    for node_id in sorted(selected):
-        label = node_by_id[node_id]["name"].split(".")[-1]
-        lines.append(f'  N{node_id}["{label}#{node_id}"]')
-    for edge in selected_edges:
-        lines.append(f'  N{edge["source"]} -->|{edge["edge_type"]}| N{edge["target"]}')
-    return "\n".join(lines)
 
 
 def prepare_output_dirs(output_dir: Path, clean: bool) -> tuple[Path, Path]:
@@ -536,171 +508,10 @@ def write_project_outputs(
     }
 
 
-def build_report(
-    summary: dict[str, Any],
-    features: list[str],
-    index_rows: list[dict[str, Any]],
-    parse_fallbacks: list[dict[str, str]],
-    parse_failures: list[dict[str, str]],
-    validation_issues: list[dict[str, str]],
-) -> str:
-    project_rows = [
-        "| `{dataset}` | {num_nodes} | {num_edges} | {defective_nodes} | {fallback_parses} | {parse_failures} | {validation_issues} |".format(**row)
-        for row in summary["datasets"]
-    ]
-    feature_rows = [f"| {index} | `{name}` |" for index, name in enumerate(features)]
-
-    edge_counts = Counter()
-    sample_graph: dict[str, Any] | None = None
-    for row in index_rows:
-        graph = json.loads(Path(row["graph_json"]).read_text(encoding="utf-8"))
-        if sample_graph is None and graph["num_edges"] > 0:
-            sample_graph = graph
-        edge_counts.update(edge["edge_type"] for edge in graph["edges"])
-    edge_rows = [f"| `{name}` | {EDGE_TYPE_TO_ID[name]} | {edge_counts.get(name, 0)} |" for name in EDGE_TYPES]
-
-    issue_rows = [
-        f"| `{item.get('dataset_name', '')}` | `{item.get('name', '')}` | `{item.get('error', item.get('issue', item.get('strict_error', '')) )}` |"
-        for item in [*parse_failures, *validation_issues][:40]
-    ] or ["| None | None | None |"]
-    fallback_rows = [
-        f"| `{item['dataset_name']}` | `{item['name']}` | `{item['source_path']}` |"
-        for item in parse_fallbacks[:40]
-    ] or ["| None | None | None |"]
-
-    mermaid = "graph LR\n  EMPTY[\"No dependency edges available\"]"
-    if sample_graph is not None:
-        mermaid = mermaid_preview(sample_graph["nodes"], sample_graph["edges"])
-
-    lines = [
-        "# NDG Extraction Report for Multi-Project PROMISE Dataset",
-        "",
-        "## 1. Objective",
-        "This report describes the generalized Network Dependency Graph extraction stage for the multi-project PROMISE SDP dataset. "
-        "The extractor creates one project-level NDG for each PROMISE dataset.",
-        "",
-        "## 2. Graph Granularity",
-        "- One NDG is generated per project/dataset.",
-        "- Each node is one mapped Java file/class from the preprocessed dataset.",
-        "- Each directed edge `A -> B` means file `A` statically depends on file `B`.",
-        "- The graph is intended for node-level defect prediction: `x` contains node features and `y` contains node labels.",
-        "- Dependencies to external libraries and unmapped classes are excluded because they cannot be represented as NDG nodes.",
-        "",
-        "## 3. Input Data",
-        f"- Input CSV: `{summary['input_csv']}`",
-        f"- Output directory: `{summary['output_dir']}`",
-        f"- Dataset rows: {summary['input_rows']}",
-        f"- Mapped rows used as NDG nodes: {summary['total_nodes']}",
-        f"- NDGs generated: {summary['graphs_generated']}",
-        "",
-        "## 4. Extraction Pipeline",
-        "- Read the combined preprocessed PROMISE CSV.",
-        "- Group mapped rows by `dataset_name`.",
-        "- Build one NDG node for each mapped class/file in that project.",
-        "- Parse each mapped Java source file with `javalang`.",
-        "- Resolve referenced types using package declarations, imports, and mapped project class names.",
-        "- Create typed file-dependency edges and deduplicate by `(source, target, edge_type)`.",
-        "- Save graph JSON plus node-level GNN tensors.",
-        "",
-        "```text",
-        "combined PROMISE CSV -> per-project mapped files -> source AST dependencies -> project-level NDG tensors",
-        "```",
-        "",
-        "## 5. Node Features",
-        "Each NDG node uses only the preprocessed software metric features. Metadata and labels are excluded from `x`.",
-        "",
-        "```text",
-        "x(file) = [wmc, dit, noc, cbo, rfc, lcom, ca, ce, npm, lcom3, loc, dam, moa, mfa, cam, ic, cbm, amc, max_cc, avg_cc]",
-        "```",
-        "",
-        "- Excluded metadata: `dataset_name`, `name`, `source_path`, `match_strategy`.",
-        "- Excluded label: `bug` / `bug_binary`.",
-        "- Label tensor: `y(file) = 1` if the class is defective, otherwise `0`.",
-        "",
-        "| Feature index | Metric |",
-        "| ---: | --- |",
-        *feature_rows,
-        "",
-        "## 6. Dependency Edge Types",
-        "| Edge type | ID | Exported edges |",
-        "| --- | ---: | ---: |",
-        *edge_rows,
-        "",
-        "| Edge type | Rule for creating `A -> B` |",
-        "| --- | --- |",
-        "| `EXTENDS` | Class `A` extends class `B`. |",
-        "| `IMPLEMENTS` | Class `A` implements interface `B`. |",
-        "| `FIELD_TYPE` | Class `A` declares a field whose type is `B`. |",
-        "| `PARAMETER_TYPE` | A method in class `A` accepts a parameter whose type is `B`. |",
-        "| `RETURN_TYPE` | A method in class `A` returns type `B`. |",
-        "| `OBJECT_CREATION` | A method in class `A` creates an object of type `B`. |",
-        "| `METHOD_CALL` | A method in class `A` calls a method through an expression statically resolved to `B`. |",
-        "",
-        "## 7. Output Files",
-        "- `graph_index.csv`: one row per generated project NDG with graph/tensor paths.",
-        "- `graphs/*.json`: readable project-level NDG graphs.",
-        "- `tensors/*_x.npy`: node metric feature matrix.",
-        "- `tensors/*_y.npy`: binary node labels.",
-        "- `tensors/*_edge_index.npy`: directed dependency connectivity.",
-        "- `tensors/*_edge_type.npy`: dependency relation type ids.",
-        "- `feature_names.json`: stable node feature order.",
-        "- `edge_type_vocab.json`: stable edge type vocabulary.",
-        "- `parse_fallbacks.json`: strict parser failures recovered by legacy normalization.",
-        "- `parse_failures.json`: unrecovered source parse failures.",
-        "- `validation_issues.json`: tensor validation issue log.",
-        "- `ndg_summary.json`: global extraction statistics.",
-        "- `ndg_report.md`: this report.",
-        "",
-        "## 8. Results",
-        "| Metric | Value |",
-        "| --- | ---: |",
-        f"| Input rows | {summary['input_rows']} |",
-        f"| NDGs generated | {summary['graphs_generated']} |",
-        f"| Total NDG nodes | {summary['total_nodes']} |",
-        f"| Total typed NDG edges | {summary['total_edges']} |",
-        f"| Node feature dimension | {summary['node_feature_dim']} |",
-        f"| Edge type vocabulary size | {summary['edge_type_vocab_size']} |",
-        f"| Defective nodes | {summary['defective_nodes']} |",
-        f"| Non-defective nodes | {summary['non_defective_nodes']} |",
-        f"| Fallback parses | {summary['fallback_parses']} |",
-        f"| Parse failures | {summary['parse_failures']} |",
-        f"| Validation issues | {summary['validation_issues']} |",
-        "",
-        "## 9. Per-Project Results",
-        "| Dataset | Nodes | Edges | Defective nodes | Fallback parses | Parse failures | Validation issues |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-        *project_rows,
-        "",
-        "## 10. Validation",
-        "The generated tensors are checked for shape consistency, finite node features, binary labels, valid edge bounds, supported relation ids, unique typed edges, and absence of file-level self edges.",
-        "",
-        "## 11. Logged Issues",
-        "| Dataset | Class | Issue |",
-        "| --- | --- | --- |",
-        *issue_rows,
-        "",
-        "## 12. Legacy-Normalized Parses",
-        "| Dataset | Class | Source path |",
-        "| --- | --- | --- |",
-        *fallback_rows,
-        "",
-        "## 13. Notes",
-        "- The NDG captures static file dependencies, not execution order.",
-        "- Method-call resolution is conservative. Calls without a resolvable receiver type are omitted.",
-        "- Keep file dependency behavior in NDG edge types; do not encode it into node features.",
-        "- The graph format is ready for future node-level prediction where each file node has its own label.",
-        "",
-        "## 14. Sample Visualization",
-        "```mermaid",
-        mermaid,
-        "```",
-    ]
-    return "\n".join(lines) + "\n"
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract project-level NDGs for PROMISE Java SDP datasets.")
-    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_standard.csv"))
+    parser.add_argument("--input-csv", type=Path, default=Path("outputs/promise/promise_preprocessed_log1p.csv"))
     parser.add_argument("--preprocess-summary", type=Path, default=Path("outputs/promise/promise_preprocess_summary.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/ndg"))
     parser.add_argument("--dataset-name", help="Optional dataset filter, e.g. ant-1.6")
@@ -783,11 +594,6 @@ def main() -> None:
     (output_dir / "parse_failures.json").write_text(json.dumps(parse_failures, indent=2), encoding="utf-8")
     (output_dir / "validation_issues.json").write_text(json.dumps(validation_issues, indent=2), encoding="utf-8")
     (output_dir / "ndg_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    (output_dir / "ndg_report.md").write_text(
-        build_report(summary, features, index_rows, parse_fallbacks, parse_failures, validation_issues),
-        encoding="utf-8",
-    )
-
     print(
         "PROMISE NDG extraction finished. "
         f"graphs_generated={len(index_rows)} nodes={summary['total_nodes']} edges={summary['total_edges']} "
@@ -796,7 +602,6 @@ def main() -> None:
     )
     print(f"index={graph_index_path}")
     print(f"summary={output_dir / 'ndg_summary.json'}")
-    print(f"report={output_dir / 'ndg_report.md'}")
 
 
 if __name__ == "__main__":
