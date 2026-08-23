@@ -46,7 +46,8 @@ Checks automatic and fixed cluster counts, output dimensions, soft-membership
 normalization, preservation of graph labels/topology, rejection of unprocessed
 non-finite metrics, transformation without refitting on test data, and
 leave-one-project-out encoding of training cluster risk. It also verifies that
-differently sized projects receive equal total cluster-fitting and risk weight.
+differently sized projects receive equal total cluster-fitting and risk weight,
+and exercises GMM with full, tied, diagonal, and spherical covariance.
 
 ## Validation Beyond Unit Tests
 

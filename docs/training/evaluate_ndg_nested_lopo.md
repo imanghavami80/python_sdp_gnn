@@ -101,9 +101,9 @@ Main controls:
 --ast-batch-size --cfg-batch-size --lr --weight-decay
 --hidden-dim --embedding-dim --ast-layers --cfg-layers
 --ndg-layers --heads --dropout --attention-dropout
---fusion-stage --cluster-features --cluster-count
+--fusion-stage --cluster-features --cluster-method --cluster-count
 --cluster-min --cluster-max --cluster-silhouette-sample-size --cluster-n-init
---cluster-risk-smoothing
+--gmm-n-init --gmm-covariance-type --gmm-reg-covar --cluster-risk-smoothing
 --seed --device --test-project
 ```
 

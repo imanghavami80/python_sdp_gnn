@@ -13,22 +13,28 @@ Cluster geometry is unsupervised and never receives defect labels. A separate
 smoothed risk feature uses training labels after clustering, with cross-fitting
 that prevents a project from being encoded by its own labels.
 
-## Selected Method
+## Available Methods
 
-The implementation uses k-means with k-means++ initialization. This method was
-selected because the inputs are a small, fixed set of numeric metrics and the
-fitted centroids can transform unseen files into a fixed-dimensional distance
-space. It is deterministic under the configured seed, fast enough to fit
-inside every nested fold, and supports a clean train/transform boundary.
+`--cluster-method kmeans` uses k-means with k-means++ initialization. It is the
+default so existing experiments remain reproducible. Fitted centroids provide
+a deterministic out-of-sample distance space.
+
+`--cluster-method gmm` uses a Gaussian mixture model. It represents overlapping
+components through posterior probabilities and measures distance using each
+component's covariance. Full covariance is the default because software metrics
+are correlated; `tied`, `diag`, and `spherical` are available as sensitivity
+options. Positive covariance regularization limits singular and ill-conditioned
+fits.
 
 The implementation does not use a raw integer cluster ID as a model feature.
 IDs are arbitrary labels and would incorrectly suggest that cluster 2 is
 numerically greater than cluster 1. Instead, for `K` clusters it creates:
 
-1. `K` standardized `log1p` distances to all centroids;
-2. `K` soft memberships computed from Gaussian distance weights, scaled by
-   each training cluster's typical within-cluster distance;
-3. one standardized nearest-centroid distance as an outlier feature;
+1. `K` standardized `log1p` distances to all components;
+2. `K` soft memberships: scaled distance weights for k-means or exact posterior
+   responsibilities for GMM;
+3. one standardized outlier feature: nearest-centroid distance for k-means or
+   negative mixture log-likelihood for GMM;
 4. one smoothed cluster-conditioned defect-risk feature.
 
 This creates `2K + 2` values in `cluster_x` while retaining the 20 original
@@ -63,20 +69,27 @@ file_risk = sum(membership_j * risk_j)
 ```
 
 `alpha` defaults to 20 and is controlled by `--cluster-risk-smoothing`.
-Each training project receives equal total sample weight when fitting k-means
-and estimating these rates. Consequently, a large project cannot dominate the
-cluster centers or risk merely because it contains more files; the weights are
-normalized to retain a mean node weight of one, so `alpha` keeps a consistent
-interpretation.
+Each training project receives equal total influence. K-means accepts exact
+sample weights. Scikit-learn GMM does not, so it is fitted on a deterministic
+equal-project resample with the same total number of nodes. Risk estimation
+always uses exact project weights. Consequently, a large project cannot
+dominate merely because it contains more files; risk weights retain a mean of
+one, so `alpha` keeps a consistent interpretation.
 For every training node, rates exclude the node's complete project. Validation
 and test nodes use all labels from their corresponding training partition.
 
 ## Selecting the Number of Clusters
 
 By default, candidate counts from 2 through 10 are fitted on the inner-fit
-nodes. Mean silhouette score selects `K`; ties prefer the smaller model. The
-score uses at most 2,000 training nodes to control its quadratic distance cost.
-Defect labels and the inner-validation project are not used for this choice.
+nodes. K-means selects the maximum silhouette score, using at most 2,000 nodes.
+GMM selects the minimum Bayesian information criterion (BIC) on its balanced
+training sample. Ties prefer the smaller model. Defect labels and the
+inner-validation project are never used for this choice.
+
+Metadata and console output flag a selection on either search boundary. An
+upper-bound selection means the configured range should be reported explicitly
+and checked in a later sensitivity analysis; it does not authorize changing the
+range after looking at held-out-project performance.
 
 A fixed predeclared count can be supplied with `--cluster-count K`. This is
 mainly useful for a controlled sensitivity experiment.
@@ -86,7 +99,8 @@ mainly useful for a controlled sensitivity experiment.
 For each outer test project:
 
 1. Metrics are imputed and standardized from inner-fit nodes only.
-2. Candidate clusterers and `K` are selected from those inner-fit metrics.
+2. Candidate clusterers and `K` are selected from those inner-fit metrics using
+   the criterion belonging to the chosen method.
 3. Each inner-fit project's training risk excludes that project's labels.
 4. The inner-validation project is transformed using fixed inner-fit
    centroids and risk fitted from inner-fit labels.
@@ -100,10 +114,10 @@ For each outer test project:
 The test project therefore cannot influence scaling, `K`, centroids, distance
 normalization, soft-membership scales, or defect risk.
 
-## Why Not the Other Common Methods?
+## Design Boundaries
 
-- Gaussian mixtures add covariance estimation and distribution assumptions
-  that are fragile for correlated metrics and differently sized projects.
+- GMM is an explicit algorithm ablation, not a replacement for k-means. Its
+  covariance regularization limits unstable full-covariance estimation.
 - Spectral and agglomerative clustering do not naturally provide the required
   fitted transform for unseen projects.
 - DBSCAN/HDBSCAN can discover noise and irregular shapes, but produce a
@@ -112,8 +126,8 @@ normalization, soft-membership scales, or defect risk.
 - A single hard k-means label discards similarity to the other clusters and is
   an arbitrary categorical code.
 
-These alternatives can be studied later, but they are not a stronger default
-for a leakage-safe cross-project feature transformer.
+The density-based alternatives can be studied later, but do not provide the
+same fixed, stable component space for unseen projects.
 
 ## Run and Ablation
 
@@ -123,7 +137,19 @@ Cluster features are enabled by default. For the proposal's late-fusion model:
 python scripts/evaluate_ndg_nested_lopo.py \
   --fusion-stage late \
   --cluster-features \
+  --cluster-method kmeans \
   --output-dir outputs/promise/nested_lopo_late_cluster_gate_kmeans \
+  --device cpu
+```
+
+Run the controlled GMM alternative separately:
+
+```bash
+python scripts/evaluate_ndg_nested_lopo.py \
+  --fusion-stage late \
+  --cluster-features \
+  --cluster-method gmm \
+  --output-dir outputs/promise/nested_lopo_late_cluster_gate_gmm \
   --device cpu
 ```
 
@@ -142,12 +168,12 @@ projects and preferably multiple seeds.
 
 ## Saved Evidence
 
-Each fold writes `cluster_features.json`, containing candidate silhouette
-scores, selected `K`, centroids, feature normalization values, membership
-scales, smoothed defect rates, and feature names. `fold_metrics.csv` records the
-selected count, branch dimension, and test gate statistics. The overall summary
-records selected counts by fold. Prediction files include `cluster_defect_risk`
-and `cluster_gate`.
+Each fold writes `cluster_features.json`, containing the method, candidate
+silhouette or BIC scores, selected `K`, fitted parameters, normalization values,
+smoothed defect rates, and feature names. `fold_metrics.csv` records the selected
+count, branch dimension, and test gate statistics. The overall summary records
+selected counts by fold. Prediction files include `cluster_defect_risk` and
+`cluster_gate`.
 
 ## References
 
@@ -159,3 +185,6 @@ and `cluster_gate`.
 - The scikit-learn [`KMeans.transform`
   documentation](https://scikit-learn.org/stable/modules/generated/sklearn.cluster.KMeans.html)
   defines the centroid-distance feature space used here.
+- The scikit-learn [`GaussianMixture`
+  documentation](https://scikit-learn.org/stable/modules/generated/sklearn.mixture.GaussianMixture.html)
+  defines posterior responsibilities, covariance options, and BIC.

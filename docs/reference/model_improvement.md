@@ -14,12 +14,12 @@ Both changes preserve the outer-test boundary.
 The proposal's late fusion and implementation's early fusion are both exposed
 through `--fusion-stage`, making the design choice a controlled ablation.
 
-Training-only k-means++ features are implemented for the proposal's second
-contribution. After direct concatenation reduced F1, clustering was moved into
-a separate gated branch and enriched with cross-fitted, smoothed defect risk.
-The outer-test boundary is preserved and `--no-cluster-features` remains the
-baseline ablation. The gated design must be measured before calling it an
-improvement.
+Training-only k-means++ and GMM features are implemented for the proposal's
+second contribution. After direct concatenation reduced F1, clustering was
+moved into a separate gated branch and enriched with cross-fitted, smoothed
+defect risk. `--cluster-method` makes the geometry algorithm a controlled
+ablation; `--no-cluster-features` remains the baseline. The outer-test boundary
+is preserved for every variant.
 
 ## Evaluation Priority
 
@@ -43,6 +43,7 @@ Change one factor at a time:
 4. Metrics + AST + CFG without NDG message passing.
 5. Full relational NDG model.
 6. Full late-fusion model with versus without cluster-derived metric features.
+7. Gated k-means++ versus gated GMM with every non-clustering setting fixed.
 
 This ablation establishes which view actually improves cross-project
 generalization. After that, prioritize extraction coverage and relation-quality

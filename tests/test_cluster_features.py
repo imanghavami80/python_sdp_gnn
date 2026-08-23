@@ -114,7 +114,8 @@ def test_clustering_rejects_non_finite_unprocessed_metrics() -> None:
         )
 
 
-def test_training_defect_risk_is_leave_one_project_out() -> None:
+@pytest.mark.parametrize("method", ["kmeans", "gmm"])
+def test_training_defect_risk_is_leave_one_project_out(method: str) -> None:
     metrics = separated_metrics()
     labels = np.asarray([0.0] * 30 + [1.0] * 30)
     groups = np.asarray(["clean_project"] * 30 + ["defect_project"] * 30)
@@ -123,7 +124,7 @@ def test_training_defect_risk_is_leave_one_project_out() -> None:
         metrics,
         labels,
         groups,
-        ClusterFeatureConfig(fixed_clusters=2),
+        ClusterFeatureConfig(method=method, fixed_clusters=2, gmm_n_init=1),
     )
 
     training_graph = attach_cluster_features(transformer, graph, training_groups=groups)
@@ -154,4 +155,51 @@ def test_cluster_risk_gives_projects_equal_total_weight() -> None:
     assert (
         transformer.metadata()["defect_risk"]["training_project_weighting"]
         == "equal total weight per project"
+    )
+
+
+@pytest.mark.parametrize("covariance_type", ["full", "tied", "diag", "spherical"])
+def test_gmm_features_are_finite_for_supported_covariances(covariance_type: str) -> None:
+    metrics = separated_metrics()
+    transformer = fit_cluster_features(
+        metrics,
+        np.asarray([0.0, 1.0] * 30),
+        two_project_groups(),
+        ClusterFeatureConfig(
+            method="gmm",
+            fixed_clusters=2,
+            gmm_n_init=1,
+            gmm_covariance_type=covariance_type,
+            random_state=11,
+        ),
+    )
+
+    features = transformer.transform(metrics)
+
+    assert features.shape == (60, 6)
+    assert np.isfinite(features).all()
+    assert np.allclose(features[:, 2:4].sum(axis=1), 1.0, atol=1e-6)
+    assert transformer.metadata()["algorithm"] == "gaussian-mixture"
+    assert transformer.metadata()["selection_criterion"] == "minimum BIC"
+
+
+def test_gmm_automatic_component_count_uses_bic() -> None:
+    transformer = fit_cluster_features(
+        separated_metrics(),
+        np.asarray([0.0, 1.0] * 30),
+        two_project_groups(),
+        ClusterFeatureConfig(
+            method="gmm",
+            min_clusters=2,
+            max_clusters=4,
+            gmm_n_init=1,
+            random_state=13,
+        ),
+    )
+
+    assert transformer.num_clusters == 2
+    assert set(transformer.selection_scores) == {2, 3, 4}
+    assert transformer.num_clusters == min(
+        transformer.selection_scores,
+        key=transformer.selection_scores.get,
     )

@@ -52,18 +52,25 @@ F1 was worse on 10 of 12 projects. This direct-concatenation design is therefore
 retained only as a negative ablation in
 `outputs/promise/nested_lopo_late_clusters/`; it is not the current model.
 
-The revised implementation keeps the 20 metrics unchanged and sends cluster
-geometry plus cross-fitted defect risk through a separate learnable gate. Its
-full evaluation has not been run yet. Write it to
-`outputs/promise/nested_lopo_late_cluster_gate_kmeans/` and compare it with the
-existing `nested_lopo_late/` baseline. Multiple seeds are still required before
-claiming improvement.
+The revised gated k-means++ implementation keeps the 20 metrics unchanged and
+sends cluster geometry plus cross-fitted defect risk through a separate branch.
+It recovered macro F1 to 0.5160, versus 0.5156 without clustering, and produced
+the best single-seed MCC (0.1387), G-Mean (0.3818), PR-AUC (0.5838), and Brier
+score (0.2602) of the three late-fusion runs. Its F1 improvement over the
+no-cluster baseline was effectively zero and was not statistically significant,
+so it is promising rather than a confirmed improvement.
+
+A BIC-selected GMM backend is available through `--cluster-method gmm`. It uses
+the same gate, cross-fitted risk, and leakage boundary and must be written to a
+separate result directory. Multiple seeds are still required after selecting
+the stronger clustering backend.
 
 ## Saved Result Files
 
 - Early fusion: `outputs/promise/nested_lopo_early/`
 - Late fusion: `outputs/promise/nested_lopo_late/`
 - Direct cluster concatenation: `outputs/promise/nested_lopo_late_clusters/`
+- Gated k-means++: `outputs/promise/nested_lopo_late_cluster_gate_kmeans/`
 
 Each directory contains `nested_lopo_summary.json`, `fold_metrics.csv`, and
 `all_test_node_predictions.csv`.

@@ -106,13 +106,19 @@ def parse_args() -> argparse.Namespace:
         "--cluster-features",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use a gated, training-only k-means++ geometry and defect-risk branch.",
+        help="Use a gated, training-only cluster geometry and defect-risk branch.",
+    )
+    parser.add_argument(
+        "--cluster-method",
+        choices=["kmeans", "gmm"],
+        default="kmeans",
+        help="Clustering backend. K-means++ remains the default for reproducibility.",
     )
     parser.add_argument(
         "--cluster-count",
         type=int,
         default=None,
-        help="Use a fixed cluster count. By default K is selected on inner-fit nodes by silhouette score.",
+        help="Use a fixed component count. Otherwise use silhouette for k-means or BIC for GMM.",
     )
     parser.add_argument("--cluster-min", type=int, default=2, help="Smallest K considered during automatic selection.")
     parser.add_argument("--cluster-max", type=int, default=10, help="Largest K considered during automatic selection.")
@@ -123,6 +129,19 @@ def parse_args() -> argparse.Namespace:
         help="Maximum training-node sample used to score each candidate K.",
     )
     parser.add_argument("--cluster-n-init", type=int, default=20, help="k-means++ restarts per candidate K.")
+    parser.add_argument("--gmm-n-init", type=int, default=5, help="GMM EM restarts per candidate count.")
+    parser.add_argument(
+        "--gmm-covariance-type",
+        choices=["full", "tied", "diag", "spherical"],
+        default="full",
+        help="GMM covariance structure; full captures correlations among the 20 metrics.",
+    )
+    parser.add_argument(
+        "--gmm-reg-covar",
+        type=float,
+        default=1e-4,
+        help="Positive covariance regularization added during GMM fitting.",
+    )
     parser.add_argument(
         "--cluster-risk-smoothing",
         type=float,
@@ -268,11 +287,15 @@ def cluster_args(
     fixed_clusters: int | None = None,
 ) -> ClusterFeatureConfig:
     return ClusterFeatureConfig(
+        method=args.cluster_method,
         min_clusters=args.cluster_min,
         max_clusters=args.cluster_max,
         fixed_clusters=args.cluster_count if fixed_clusters is None else fixed_clusters,
         silhouette_sample_size=args.cluster_silhouette_sample_size,
         n_init=args.cluster_n_init,
+        gmm_n_init=args.gmm_n_init,
+        gmm_covariance_type=args.gmm_covariance_type,
+        gmm_reg_covar=args.gmm_reg_covar,
         risk_smoothing=args.cluster_risk_smoothing,
         random_state=random_state,
     )
@@ -700,9 +723,19 @@ def run_outer_fold(
         cluster_metadata = {"selection": selection_clusterer.metadata()}
         print(
             f"fold={test_project} stage=cluster_selection status=finished "
-            f"clusters={selected_cluster_count} features={len(selection_clusterer.feature_names)}",
+            f"method={args.cluster_method} clusters={selected_cluster_count} "
+            f"features={len(selection_clusterer.feature_names)}",
             flush=True,
         )
+        if args.cluster_count is None and selected_cluster_count in {
+            args.cluster_min,
+            args.cluster_max,
+        }:
+            print(
+                f"fold={test_project} stage=cluster_selection status=boundary "
+                f"selected={selected_cluster_count} range={args.cluster_min}..{args.cluster_max}",
+                flush=True,
+            )
     cluster_dim = 0 if fit_graph.cluster_x is None else int(fit_graph.cluster_x.size(1))
     fold_ndg_config = replace(ndg_config, cluster_dim=cluster_dim)
     set_seed(args.seed + 2000 + fold_index)
@@ -879,6 +912,7 @@ def run_outer_fold(
         "ndg_selected_epochs": int(best_ndg_epoch),
         "decision_threshold": decision_threshold,
         "cluster_count": selected_cluster_count,
+        "cluster_method": args.cluster_method if args.cluster_features else None,
         "cluster_feature_dim": 0 if selected_cluster_count is None else 2 * selected_cluster_count + 2,
         "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_features else None,
         "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_features else None,
@@ -1054,6 +1088,7 @@ def main() -> None:
             "NDG training and epoch selection",
             "metric normalization",
             "cluster-count selection and cluster fitting",
+            "cluster defect-risk estimation",
             "decision-threshold selection",
         ],
         "model_pooled_metrics": safe_pooled_metrics(all_predictions, "probability", "prediction"),
@@ -1067,7 +1102,9 @@ def main() -> None:
         "ndg_encoder_config_template": asdict(ndg_config),
         "cluster_features": {
             "enabled": args.cluster_features,
-            "algorithm": "k-means++" if args.cluster_features else None,
+            "algorithm": (
+                "k-means++" if args.cluster_method == "kmeans" else "gaussian-mixture"
+            ) if args.cluster_features else None,
             "input": "training-fold standardized handcrafted metrics",
             "uses_defect_labels_for_cluster_geometry": False,
             "defect_labels_used_for": (
@@ -1077,8 +1114,31 @@ def main() -> None:
             "training_project_weighting": (
                 "equal total weight per project" if args.cluster_features else None
             ),
+            "gmm_project_balancing": (
+                "deterministic equal-project resampling"
+                if args.cluster_features and args.cluster_method == "gmm"
+                else None
+            ),
             "fixed_cluster_count": args.cluster_count,
             "candidate_range": [args.cluster_min, args.cluster_max] if args.cluster_features else None,
+            "selection_criterion": (
+                "maximum silhouette score" if args.cluster_method == "kmeans" else "minimum BIC"
+            ) if args.cluster_features else None,
+            "gmm_covariance_type": (
+                args.gmm_covariance_type
+                if args.cluster_features and args.cluster_method == "gmm"
+                else None
+            ),
+            "gmm_reg_covar": (
+                args.gmm_reg_covar
+                if args.cluster_features and args.cluster_method == "gmm"
+                else None
+            ),
+            "gmm_n_init": (
+                args.gmm_n_init
+                if args.cluster_features and args.cluster_method == "gmm"
+                else None
+            ),
             "selected_counts_by_fold": {
                 str(row["test_project"]): row["cluster_count"] for row in fold_rows
             },

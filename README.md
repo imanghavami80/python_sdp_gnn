@@ -33,7 +33,7 @@ PROMISE CSV + Java source code
    Extract AST   Extract CFG    Software metrics
        |          with Soot          |
        v             |               v
-   AST encoder       v        Training-only k-means++
+   AST encoder       v        Training-only k-means++ / GMM
                  CFG encoder   cluster geometry + risk
        |             |               |
        +-------------+---------------+
@@ -237,9 +237,9 @@ For every outer LOPO fold, the evaluator:
 1. Holds out one complete project for testing.
 2. Uses another training project for inner epoch selection.
 3. Fits metric imputation and scaling only on training files.
-4. Selects and fits k-means++ using only the appropriate training files, then
-   builds a separate cluster view from centroid distances, soft memberships,
-   outlier distance, and cross-fitted cluster defect risk.
+4. Selects and fits k-means++ or GMM using only the appropriate training files,
+   then builds a separate cluster view from component distances, soft
+   memberships, outlier evidence, and cross-fitted cluster defect risk.
 5. Trains the AST and CFG encoders without the outer test project.
 6. Generates fold-specific AST and CFG embeddings.
 7. Injects the cluster view through a learnable residual gate, then combines
@@ -256,7 +256,9 @@ directories and report both as a predeclared ablation.
 
 Cluster features are enabled by default. Use `--no-cluster-features` only for
 the required with/without-clustering ablation. Automatic selection considers
-`K=2..10`; `--cluster-count K` uses a predeclared fixed count.
+`K=2..10`; `--cluster-count K` uses a predeclared fixed count. Select
+`--cluster-method kmeans` for silhouette-selected k-means++ or
+`--cluster-method gmm` for BIC-selected Gaussian mixtures.
 `--cluster-risk-smoothing` controls shrinkage of training-only cluster defect
 rates. Keep its default unless it is tuned entirely inside the nested protocol.
 
