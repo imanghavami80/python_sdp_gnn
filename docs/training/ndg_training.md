@@ -50,6 +50,17 @@ dominate optimization merely because it contains more files.
 
 No validation or test value influences fitted transformations.
 
+## Cluster-Derived Metric Features
+
+After leakage-safe standardization, `training/clustering.py` creates a separate
+k-means++ representation containing centroid distances, soft memberships,
+outlier distance, and smoothed cluster defect risk. It does not modify the 20
+original metrics. The clusterer is fitted only on the graph passed as training,
+with equal total fitting weight per project, and transforms validation/test
+graphs without refitting. Training-node
+risk is leave-one-project-out encoded. See [Cluster-Based NDG
+Features](../features/cluster_features.md).
+
 ## Optimization
 
 - `loss_function` computes positive-class weighting using project-balanced
@@ -74,5 +85,7 @@ evaluated labels contain only one class.
 
 - Pass only outer-training graphs to fitting functions.
 - Apply `standardize_metrics` separately for each outer fold.
+- Fit cluster geometry and risk after standardization and only on the relevant training graph.
+- Cross-fit risk for training projects; never encode a project from its own labels.
 - Never combine a held-out project into the disconnected training graph.
 - Preserve node ordering when writing predictions and embedding indexes.

@@ -43,17 +43,27 @@ run, especially recall and F1. Early fusion produced better ranking results.
 Therefore, late fusion is the current working choice, but this single-seed
 experiment does not prove that it is universally better.
 
-## Next Experiment
+## Cluster Feature Status
 
-Add the proposed cluster-based features without using defect labels or held-out
-project data during clustering. Then compare late fusion with and without those
-features under the same local protocol. Multiple seeds should be run before
-treating the final result as stable.
+The first k-means++ experiment directly concatenated five unsupervised cluster
+features into the metric view. Its macro accuracy increased from 0.5271 to
+0.5788, but recall fell from 0.8218 to 0.5485 and F1 fell from 0.5156 to 0.4077.
+F1 was worse on 10 of 12 projects. This direct-concatenation design is therefore
+retained only as a negative ablation in
+`outputs/promise/nested_lopo_late_clusters/`; it is not the current model.
+
+The revised implementation keeps the 20 metrics unchanged and sends cluster
+geometry plus cross-fitted defect risk through a separate learnable gate. Its
+full evaluation has not been run yet. Write it to
+`outputs/promise/nested_lopo_late_cluster_gate_kmeans/` and compare it with the
+existing `nested_lopo_late/` baseline. Multiple seeds are still required before
+claiming improvement.
 
 ## Saved Result Files
 
 - Early fusion: `outputs/promise/nested_lopo_early/`
 - Late fusion: `outputs/promise/nested_lopo_late/`
+- Direct cluster concatenation: `outputs/promise/nested_lopo_late_clusters/`
 
 Each directory contains `nested_lopo_summary.json`, `fold_metrics.csv`, and
 `all_test_node_predictions.csv`.
