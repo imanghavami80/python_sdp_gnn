@@ -65,12 +65,19 @@ the same gate, cross-fitted risk, and leakage boundary and must be written to a
 separate result directory. Multiple seeds are still required after selecting
 the stronger clustering backend.
 
+The density-based HDBSCAN backend is available through `--cluster-method
+hdbscan`. It uses a fixed six-feature density representation so its
+data-dependent cluster count cannot change the selected NDG architecture. Its
+result directory must also remain separate for a controlled comparison.
+
 ## Saved Result Files
 
 - Early fusion: `outputs/promise/nested_lopo_early/`
 - Late fusion: `outputs/promise/nested_lopo_late/`
 - Direct cluster concatenation: `outputs/promise/nested_lopo_late_clusters/`
 - Gated k-means++: `outputs/promise/nested_lopo_late_cluster_gate_kmeans/`
+- Gated GMM: `outputs/promise/nested_lopo_late_cluster_gate_gmm/`
+- Gated HDBSCAN: `outputs/promise/nested_lopo_late_cluster_gate_hdbscan/`
 
 Each directory contains `nested_lopo_summary.json`, `fold_metrics.csv`, and
 `all_test_node_predictions.csv`.

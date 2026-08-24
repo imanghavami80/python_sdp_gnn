@@ -110,7 +110,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cluster-method",
-        choices=["kmeans", "gmm"],
+        choices=["kmeans", "gmm", "hdbscan"],
         default="kmeans",
         help="Clustering backend. K-means++ remains the default for reproducibility.",
     )
@@ -118,7 +118,7 @@ def parse_args() -> argparse.Namespace:
         "--cluster-count",
         type=int,
         default=None,
-        help="Use a fixed component count. Otherwise use silhouette for k-means or BIC for GMM.",
+        help="Use a fixed component count for k-means/GMM; unavailable for HDBSCAN.",
     )
     parser.add_argument("--cluster-min", type=int, default=2, help="Smallest K considered during automatic selection.")
     parser.add_argument("--cluster-max", type=int, default=10, help="Largest K considered during automatic selection.")
@@ -141,6 +141,19 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1e-4,
         help="Positive covariance regularization added during GMM fitting.",
+    )
+    parser.add_argument(
+        "--hdbscan-min-cluster-sizes",
+        type=int,
+        nargs="+",
+        default=[20, 40, 80, 160],
+        help="Candidate HDBSCAN minimum cluster sizes selected by relative DBCV.",
+    )
+    parser.add_argument(
+        "--hdbscan-min-samples",
+        type=int,
+        default=10,
+        help="HDBSCAN density-neighborhood size shared by all candidates.",
     )
     parser.add_argument(
         "--cluster-risk-smoothing",
@@ -285,17 +298,28 @@ def cluster_args(
     args: argparse.Namespace,
     random_state: int,
     fixed_clusters: int | None = None,
+    hdbscan_min_cluster_sizes: tuple[int, ...] | None = None,
 ) -> ClusterFeatureConfig:
     return ClusterFeatureConfig(
         method=args.cluster_method,
         min_clusters=args.cluster_min,
         max_clusters=args.cluster_max,
-        fixed_clusters=args.cluster_count if fixed_clusters is None else fixed_clusters,
+        fixed_clusters=(
+            None
+            if args.cluster_method == "hdbscan"
+            else args.cluster_count if fixed_clusters is None else fixed_clusters
+        ),
         silhouette_sample_size=args.cluster_silhouette_sample_size,
         n_init=args.cluster_n_init,
         gmm_n_init=args.gmm_n_init,
         gmm_covariance_type=args.gmm_covariance_type,
         gmm_reg_covar=args.gmm_reg_covar,
+        hdbscan_min_cluster_sizes=(
+            tuple(args.hdbscan_min_cluster_sizes)
+            if hdbscan_min_cluster_sizes is None
+            else hdbscan_min_cluster_sizes
+        ),
+        hdbscan_min_samples=args.hdbscan_min_samples,
         risk_smoothing=args.cluster_risk_smoothing,
         random_state=random_state,
     )
@@ -703,6 +727,8 @@ def run_outer_fold(
     fit_graph, validation_graph = standardize_metrics(fit_graph, validation_graph)
     cluster_metadata: dict[str, Any] | None = None
     selected_cluster_count: int | None = None
+    selected_hdbscan_min_cluster_size: int | None = None
+    final_cluster_count: int | None = None
     if args.cluster_features:
         fit_groups = np.concatenate(
             [np.full(selection_graphs[project].num_nodes, project) for project in fit_projects]
@@ -714,6 +740,7 @@ def run_outer_fold(
             cluster_args(args, args.seed + 4000 + fold_index),
         )
         selected_cluster_count = selection_clusterer.num_clusters
+        selected_hdbscan_min_cluster_size = selection_clusterer.density_min_cluster_size
         fit_graph = attach_cluster_features(
             selection_clusterer,
             fit_graph,
@@ -727,13 +754,16 @@ def run_outer_fold(
             f"features={len(selection_clusterer.feature_names)}",
             flush=True,
         )
-        if args.cluster_count is None and selected_cluster_count in {
-            args.cluster_min,
-            args.cluster_max,
-        }:
+        selection_metadata = cluster_metadata["selection"]
+        if selection_metadata["selection_at_search_boundary"]:
+            boundary_value = (
+                f"min_cluster_size={selected_hdbscan_min_cluster_size}"
+                if args.cluster_method == "hdbscan"
+                else f"clusters={selected_cluster_count}"
+            )
             print(
                 f"fold={test_project} stage=cluster_selection status=boundary "
-                f"selected={selected_cluster_count} range={args.cluster_min}..{args.cluster_max}",
+                f"selected={boundary_value}",
                 flush=True,
             )
     cluster_dim = 0 if fit_graph.cluster_x is None else int(fit_graph.cluster_x.size(1))
@@ -775,17 +805,25 @@ def run_outer_fold(
         full_train_groups = np.concatenate(
             [np.full(final_graphs[project].num_nodes, project) for project in outer_train_projects]
         )
+        if args.cluster_method == "hdbscan" and selected_hdbscan_min_cluster_size is None:
+            raise AssertionError("Selected HDBSCAN min_cluster_size is missing")
         final_clusterer = fit_cluster_features(
             full_train.metrics_x,
             full_train.y,
             full_train_groups,
-            cluster_args(args, args.seed + 5000 + fold_index, fixed_clusters=selected_cluster_count),
+            cluster_args(
+                args,
+                args.seed + 5000 + fold_index,
+                fixed_clusters=selected_cluster_count,
+                hdbscan_min_cluster_sizes=(selected_hdbscan_min_cluster_size,)
+                if selected_hdbscan_min_cluster_size is not None
+                else None,
+            ),
         )
+        final_cluster_count = final_clusterer.num_clusters
         test_cluster_assignments = final_clusterer.assignments(test_graph.metrics_x)
         test_cluster_features = final_clusterer.transform(test_graph.metrics_x)
-        membership_start = final_clusterer.num_clusters
-        membership_end = 2 * final_clusterer.num_clusters
-        test_cluster_confidence = test_cluster_features[:, membership_start:membership_end].max(axis=1)
+        test_cluster_confidence = final_clusterer.membership_confidence(test_graph.metrics_x)
         test_cluster_outlier_distance = test_cluster_features[:, -2]
         test_cluster_defect_risk = test_cluster_features[:, -1]
         full_train = attach_cluster_features(
@@ -912,8 +950,10 @@ def run_outer_fold(
         "ndg_selected_epochs": int(best_ndg_epoch),
         "decision_threshold": decision_threshold,
         "cluster_count": selected_cluster_count,
+        "final_cluster_count": final_cluster_count,
         "cluster_method": args.cluster_method if args.cluster_features else None,
-        "cluster_feature_dim": 0 if selected_cluster_count is None else 2 * selected_cluster_count + 2,
+        "hdbscan_min_cluster_size": selected_hdbscan_min_cluster_size,
+        "cluster_feature_dim": cluster_dim,
         "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_features else None,
         "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_features else None,
         **{f"model_{key}": value for key, value in metrics.items()},
@@ -975,6 +1015,8 @@ def main() -> None:
         raise ValueError("Epoch, patience, and batch-size arguments must be positive")
     if args.cluster_features:
         cluster_args(args, args.seed)
+        if args.cluster_method == "hdbscan" and args.cluster_count is not None:
+            raise ValueError("--cluster-count is not available with --cluster-method hdbscan")
     elif args.cluster_count is not None:
         raise ValueError("--cluster-count requires --cluster-features")
     output_dir = resolve_path(args.output_dir)
@@ -1103,8 +1145,14 @@ def main() -> None:
         "cluster_features": {
             "enabled": args.cluster_features,
             "algorithm": (
-                "k-means++" if args.cluster_method == "kmeans" else "gaussian-mixture"
-            ) if args.cluster_features else None,
+                {
+                    "kmeans": "k-means++",
+                    "gmm": "gaussian-mixture",
+                    "hdbscan": "hdbscan",
+                }[args.cluster_method]
+                if args.cluster_features
+                else None
+            ),
             "input": "training-fold standardized handcrafted metrics",
             "uses_defect_labels_for_cluster_geometry": False,
             "defect_labels_used_for": (
@@ -1114,15 +1162,28 @@ def main() -> None:
             "training_project_weighting": (
                 "equal total weight per project" if args.cluster_features else None
             ),
-            "gmm_project_balancing": (
+            "resampled_project_balancing": (
                 "deterministic equal-project resampling"
                 if args.cluster_features and args.cluster_method == "gmm"
                 else None
             ),
+            "hdbscan_geometry_training": (
+                "unique training nodes; risk remains project-weighted"
+                if args.cluster_features and args.cluster_method == "hdbscan"
+                else None
+            ),
             "fixed_cluster_count": args.cluster_count,
-            "candidate_range": [args.cluster_min, args.cluster_max] if args.cluster_features else None,
+            "candidate_range": (
+                list(args.hdbscan_min_cluster_sizes)
+                if args.cluster_features and args.cluster_method == "hdbscan"
+                else [args.cluster_min, args.cluster_max] if args.cluster_features else None
+            ),
             "selection_criterion": (
-                "maximum silhouette score" if args.cluster_method == "kmeans" else "minimum BIC"
+                "maximum silhouette score"
+                if args.cluster_method == "kmeans"
+                else "minimum BIC"
+                if args.cluster_method == "gmm"
+                else "maximum relative DBCV"
             ) if args.cluster_features else None,
             "gmm_covariance_type": (
                 args.gmm_covariance_type
@@ -1139,8 +1200,21 @@ def main() -> None:
                 if args.cluster_features and args.cluster_method == "gmm"
                 else None
             ),
+            "hdbscan_min_cluster_sizes": (
+                args.hdbscan_min_cluster_sizes
+                if args.cluster_features and args.cluster_method == "hdbscan"
+                else None
+            ),
+            "hdbscan_min_samples": (
+                args.hdbscan_min_samples
+                if args.cluster_features and args.cluster_method == "hdbscan"
+                else None
+            ),
             "selected_counts_by_fold": {
                 str(row["test_project"]): row["cluster_count"] for row in fold_rows
+            },
+            "final_counts_by_fold": {
+                str(row["test_project"]): row["final_cluster_count"] for row in fold_rows
             },
             "features_per_fold": {
                 str(row["test_project"]): row["cluster_feature_dim"] for row in fold_rows

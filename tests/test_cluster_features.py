@@ -3,6 +3,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("sklearn")
+pytest.importorskip("hdbscan")
 
 from thesis_project.training import (
     ClusterFeatureConfig,
@@ -203,3 +204,48 @@ def test_gmm_automatic_component_count_uses_bic() -> None:
         transformer.selection_scores,
         key=transformer.selection_scores.get,
     )
+
+
+def test_hdbscan_produces_fixed_density_features_and_metadata() -> None:
+    transformer = fit_cluster_features(
+        separated_metrics(),
+        np.asarray([0.0, 1.0] * 30),
+        two_project_groups(),
+        ClusterFeatureConfig(
+            method="hdbscan",
+            hdbscan_min_cluster_sizes=(5, 10, 15),
+            hdbscan_min_samples=3,
+            random_state=17,
+        ),
+    )
+
+    features = transformer.transform(separated_metrics())
+    metadata = transformer.metadata()
+
+    assert features.shape == (60, 6)
+    assert np.isfinite(features).all()
+    assert transformer.density_min_cluster_size in {5, 10, 15}
+    assert metadata["algorithm"] == "hdbscan"
+    assert metadata["selection_criterion"] == "maximum relative DBCV"
+    assert len(metadata["feature_names"]) == 6
+
+
+def test_hdbscan_all_noise_falls_back_to_finite_features() -> None:
+    transformer = fit_cluster_features(
+        separated_metrics(),
+        np.asarray([0.0, 1.0] * 30),
+        two_project_groups(),
+        ClusterFeatureConfig(
+            method="hdbscan",
+            hdbscan_min_cluster_sizes=(59,),
+            hdbscan_min_samples=3,
+            random_state=19,
+        ),
+    )
+
+    features = transformer.transform(separated_metrics())
+
+    assert transformer.num_clusters == 0
+    assert features.shape == (60, 6)
+    assert np.isfinite(features).all()
+    assert np.all(transformer.assignments(separated_metrics()) == -1)

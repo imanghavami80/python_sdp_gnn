@@ -103,7 +103,8 @@ Main controls:
 --ndg-layers --heads --dropout --attention-dropout
 --fusion-stage --cluster-features --cluster-method --cluster-count
 --cluster-min --cluster-max --cluster-silhouette-sample-size --cluster-n-init
---gmm-n-init --gmm-covariance-type --gmm-reg-covar --cluster-risk-smoothing
+--gmm-n-init --gmm-covariance-type --gmm-reg-covar
+--hdbscan-min-cluster-sizes --hdbscan-min-samples --cluster-risk-smoothing
 --seed --device --test-project
 ```
 

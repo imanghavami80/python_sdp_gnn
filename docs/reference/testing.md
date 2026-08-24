@@ -48,6 +48,8 @@ non-finite metrics, transformation without refitting on test data, and
 leave-one-project-out encoding of training cluster risk. It also verifies that
 differently sized projects receive equal total cluster-fitting and risk weight,
 and exercises GMM with full, tied, diagonal, and spherical covariance.
+It also verifies fixed-size HDBSCAN features for both discovered-cluster and
+all-noise cases.
 
 ## Validation Beyond Unit Tests
 

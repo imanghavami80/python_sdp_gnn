@@ -53,7 +53,7 @@ No validation or test value influences fitted transformations.
 ## Cluster-Derived Metric Features
 
 After leakage-safe standardization, `training/clustering.py` creates a separate
-k-means++ or GMM representation containing component distances, soft
+k-means++, GMM, or HDBSCAN representation containing component/density features, soft
 memberships, outlier evidence, and smoothed cluster defect risk. It does not modify the 20
 original metrics. The clusterer is fitted only on the graph passed as training,
 with equal total fitting weight per project, and transforms validation/test
