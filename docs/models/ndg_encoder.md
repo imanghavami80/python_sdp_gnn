@@ -16,7 +16,8 @@ For one project graph or disconnected training projects:
 - `cluster_x`: an optional separate cluster representation containing geometry
   and leakage-safe risk features `[num_files, cluster_dim]`.
 - `ast_x`: fold-specific AST embeddings `[num_files, ast_dim]`.
-- `cfg_x`: fold-specific CFG embeddings `[num_files, cfg_dim]`.
+- `cfg_x`: fold-specific CFG embeddings `[num_files, cfg_dim]`; the historical
+  tensor name is retained for checkpoint compatibility.
 - `view_mask`: availability flags `[num_files, 3]`.
 - `edge_index`: typed file dependency edges `[2, num_edges]`.
 - `edge_type`: relation IDs `[num_edges]`.

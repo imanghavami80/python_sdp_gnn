@@ -20,7 +20,6 @@ from thesis_project.models.ndg_encoder import (
     NDGMultiViewRelationalGATEncoder,
     NDGNodeClassifier,
 )
-
 __all__ = [
     "ASTEncoderConfig",
     "ASTGINEncoder",

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Extract one Soot-based file-level CFG per mapped PROMISE Java file."""
+"""Extract one exception-aware file-level CFG per mapped PROMISE Java file."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
+import tarfile
+import urllib.request
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -31,14 +34,17 @@ CFG_NODE_TYPES = [
 NODE_TYPE_TO_ID = {name: idx for idx, name in enumerate(CFG_NODE_TYPES)}
 
 CFG_EDGE_TYPES = [
-    "CFG_NEXT",
-    "CFG_TRUE",
-    "CFG_FALSE",
-    "CFG_RETURN",
-    "CFG_EXCEPTION",
-    "CFG_BACK",
+    "CFG_ENTRY",
+    "CFG_FALLTHROUGH",
+    "CFG_BRANCH_TRUE",
+    "CFG_BRANCH_FALSE",
+    "CFG_GOTO",
     "CFG_SWITCH_CASE",
     "CFG_SWITCH_DEFAULT",
+    "CFG_RETURN",
+    "CFG_THROW",
+    "CFG_EXCEPTION_HANDLER",
+    "CFG_EXCEPTION_EXIT",
 ]
 EDGE_TYPE_TO_ID = {name: idx for idx, name in enumerate(CFG_EDGE_TYPES)}
 
@@ -106,6 +112,47 @@ INVOKE_KIND_EMBEDDING_DIM = 8
 MODEL_NODE_FEATURE_DIM = STRUCTURAL_FEATURE_DIM + NODE_TYPE_EMBEDDING_DIM + STMT_KIND_EMBEDDING_DIM + INVOKE_KIND_EMBEDDING_DIM
 
 
+# PROMISE contains the named release versions, but some archived source trees no
+# longer carry enough third-party dependencies to compile useful bytecode on a
+# current JDK. For those releases, prefer the matching official Apache binary
+# over ECJ's "Unresolved compilation problem" method stubs. The small extracted
+# JARs are cached outside --build-dir so routine clean extraction keeps them.
+OFFICIAL_RELEASE_BYTECODE: dict[str, dict[str, Any]] = {
+    "camel-1.6": {
+        "url": "https://archive.apache.org/dist/camel/apache-camel/1.6.0/apache-camel-1.6.0.tar.gz",
+        "archive_sha256": "8be89f0e5824dabd570e17ac1354872beb24c96c9960e49cce614db4c60c2712",
+        "members": [
+            {
+                "path": "apache-camel-1.6.0/apache-camel-1.6.0.jar",
+                "sha256": "1c5bcc46e175d4858a623aa2d2bdd8690e3e9d9606a5586d7f6ed2ea16c85e77",
+            }
+        ],
+    },
+    "synapse-1.2": {
+        "url": "https://archive.apache.org/dist/synapse/1.2/synapse-1.2-bin.tar.gz",
+        "archive_sha256": "a5bba4375902a8c0d98b529499e98582b58d8111ec29befdc410d09f38fa5d79",
+        "members": [
+            {
+                "path": "synapse-1.2/lib/synapse-core-1.2.jar",
+                "sha256": "4eae83b64affe4aed859028d25bf71be4b937648e9940e92658ea8660a6cd772",
+            },
+            {
+                "path": "synapse-1.2/lib/synapse-extensions-1.2.jar",
+                "sha256": "8dd1e1cf3ee1d589c6a968548d6be5c2e7c48643f7f488c095ef5e271be3019f",
+            },
+            {
+                "path": "synapse-1.2/lib/synapse-transports-1.2.jar",
+                "sha256": "85088f180778abdcdcccbf8c431c53cf3ba81cc4815f7c5632980eabb37e29e1",
+            },
+            {
+                "path": "synapse-1.2/lib/synapse-samples-1.2.jar",
+                "sha256": "af59158bc4f425f3d9d44a714404aefbe60fe3369442a459372d6a8cacc55dbf",
+            },
+        ],
+    },
+}
+
+
 def run(cmd: list[str], cwd: Path, log_path: Path | None = None, check: bool = True) -> subprocess.CompletedProcess[str]:
     if log_path is None:
         return subprocess.run(cmd, cwd=cwd, text=True, check=check)
@@ -121,8 +168,6 @@ def sanitize_filename(value: str, max_len: int = 180) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
     if len(safe) <= max_len:
         return safe
-    import hashlib
-
     digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
     return f"{safe[: max_len - 13]}_{digest}"
 
@@ -131,19 +176,85 @@ def graph_id(dataset_name: str, class_name: str) -> str:
     return f"{dataset_name}::{class_name}"
 
 
-def choose_ecj_level(source_root: Path) -> str:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ensure_official_release_bytecode(
+    dataset_name: str,
+    cache_dir: Path,
+) -> tuple[list[Path], str]:
+    """Return checksum-verified exact-release JARs for known incomplete builds."""
+    spec = OFFICIAL_RELEASE_BYTECODE.get(dataset_name)
+    if spec is None:
+        return [], "not_configured"
+
+    dataset_cache = cache_dir / sanitize_filename(dataset_name)
+    members = spec["members"]
+    targets = [dataset_cache / Path(member["path"]).name for member in members]
+    if all(
+        path.is_file() and sha256_file(path) == member["sha256"]
+        for path, member in zip(targets, members)
+    ):
+        return targets, "cache"
+
+    dataset_cache.mkdir(parents=True, exist_ok=True)
+    archive_part = dataset_cache / "release.tar.gz.part"
+    try:
+        request = urllib.request.Request(
+            spec["url"],
+            headers={"User-Agent": "python-sdp-gnn-cfg-extractor/1"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response, archive_part.open("wb") as output:
+            shutil.copyfileobj(response, output, length=1024 * 1024)
+        if sha256_file(archive_part) != spec["archive_sha256"]:
+            raise ValueError(f"archive checksum mismatch for {dataset_name}")
+
+        with tarfile.open(archive_part, mode="r:gz") as archive:
+            for member_spec, target in zip(members, targets):
+                source = archive.extractfile(member_spec["path"])
+                if source is None:
+                    raise FileNotFoundError(f"missing {member_spec['path']} in release archive")
+                target_part = target.with_suffix(target.suffix + ".part")
+                with source, target_part.open("wb") as output:
+                    shutil.copyfileobj(source, output, length=1024 * 1024)
+                if sha256_file(target_part) != member_spec["sha256"]:
+                    target_part.unlink(missing_ok=True)
+                    raise ValueError(f"JAR checksum mismatch for {member_spec['path']}")
+                target_part.replace(target)
+        return targets, "download"
+    except Exception as exc:
+        for path, member in zip(targets, members):
+            if path.exists() and sha256_file(path) != member["sha256"]:
+                path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Official release bytecode unavailable for {dataset_name}: {exc}"
+        ) from exc
+    finally:
+        archive_part.unlink(missing_ok=True)
+
+
+def choose_ecj_level(source_root: Path, source_paths: list[Path] | None = None) -> str:
     """Choose a practical ECJ source level for legacy and newer PROMISE projects."""
-    checked = 0
     has_java5_syntax = False
-    for java_path in source_root.rglob("*.java"):
-        if checked >= 300:
-            break
-        checked += 1
+    candidates = source_paths if source_paths is not None else source_root.rglob("*.java")
+    for java_path in candidates:
         text = java_path.read_text(encoding="utf-8", errors="ignore")
-        if "@" in text and re.search(r"@\s*[A-Za-z_][A-Za-z0-9_.]*", text):
+        # Javadoc tags such as @author and {@link ...} are not annotations.
+        # Counting them as Java 5 syntax made ECJ reserve `enum` in genuinely
+        # pre-Java-5 projects (notably Log4j 1.2), corrupting their compilation.
+        code = re.sub(r"/\*.*?\*/|//[^\r\n]*", "", text, flags=re.DOTALL)
+        if re.search(r"(?m)^\s*@(?:interface\s+)?[A-Za-z_][A-Za-z0-9_.]*", code):
             has_java5_syntax = True
             break
-        if re.search(r"\b(?:List|Map|Set|Iterator|Collection|Comparable|Class)\s*<", text):
+        if re.search(r"\b(?:List|Map|Set|Iterator|Collection|Comparable|Class)\s*<", code):
+            has_java5_syntax = True
+            break
+        if re.search(r"\benum\s+[A-Za-z_]\w*(?:\s+implements\s+[^\{]+)?\s*\{", code):
             has_java5_syntax = True
             break
     return "-1.5" if has_java5_syntax else "-1.3"
@@ -163,6 +274,14 @@ def parse_flag(value: str) -> int:
     return 1 if str(value).strip() == "1" else 0
 
 
+def quote_ecj_argfile_path(path: str | Path) -> str:
+    """Quote one ECJ argument-file path without relying on whitespace splitting."""
+    value = str(path)
+    if "\n" in value or "\r" in value:
+        raise ValueError("Java source paths cannot contain newlines")
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def compile_sources(
     repo_root: Path,
     dataset_name: str,
@@ -171,15 +290,20 @@ def compile_sources(
     argfile: Path,
     compile_log: Path,
     source_level: str,
+    source_paths: list[Path] | None = None,
 ) -> list[dict[str, str]]:
     classes_dir.mkdir(parents=True, exist_ok=True)
-    all_sources = sorted(str(path) for path in source_root.rglob("*.java"))
+    candidates = source_paths if source_paths is not None else source_root.rglob("*.java")
+    all_sources = sorted({str(path.resolve()) for path in candidates})
     if not all_sources:
         return [{"dataset_name": dataset_name, "file_id": "__global__", "source_path": "", "error": "no_java_sources_found"}]
 
     argfile.parent.mkdir(parents=True, exist_ok=True)
-    argfile.write_text("\n".join(all_sources) + "\n", encoding="utf-8")
-    ecj_jar = repo_root / "tools/ecj/ecj-4.6.1.jar"
+    argfile.write_text(
+        "\n".join(quote_ecj_argfile_path(path) for path in all_sources) + "\n",
+        encoding="utf-8",
+    )
+    ecj_jar = repo_root / "tools/ecj/ecj-3.32.0.jar"
     cmd = [
         "java",
         "-jar",
@@ -194,8 +318,8 @@ def compile_sources(
         str(source_root),
         "-classpath",
         project_classpath(source_root, classes_dir),
-        f"@{argfile}",
     ]
+    cmd.append(f"@{argfile}")
     result = run(cmd, cwd=repo_root, log_path=compile_log, check=False)
     if result.returncode == 0:
         return []
@@ -204,7 +328,10 @@ def compile_sources(
             "dataset_name": dataset_name,
             "file_id": "__global__",
             "source_path": str(source_root),
-            "error": f"ecj_partial_failure:{result.returncode}; source_level={source_level}; see {compile_log}",
+            "error": (
+                f"ecj_partial_failure:{result.returncode}; source_level={source_level}; "
+                f"see {compile_log}"
+            ),
         }
     ]
 
@@ -227,7 +354,6 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
         if rec == "MFAIL":
             failures.append({"file_id": parts[1], "error": f"{parts[2]} :: {parts[3] if len(parts) > 3 else 'method_fail'}"})
             continue
-
         class_name = parts[1]
         graph = by_class[class_name]
         if rec == "METHOD":
@@ -312,7 +438,7 @@ def parse_tsv(tsv_path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
             dst_key = (edge["method_id"], edge["target_local"])
             if src_key not in node_id_map or dst_key not in node_id_map:
                 continue
-            edge_type = edge["edge_type"] if edge["edge_type"] in EDGE_TYPE_TO_ID else "CFG_NEXT"
+            edge_type = edge["edge_type"] if edge["edge_type"] in EDGE_TYPE_TO_ID else "CFG_FALLTHROUGH"
             edges.append(
                 {
                     "source": node_id_map[src_key],
@@ -375,23 +501,86 @@ def annotate_cfg_roles(nodes: list[dict[str, Any]], edges: list[dict[str, Any]])
         method_nodes.sort(key=lambda item: int(item["id"]))
     max_method_size = max((len(method_nodes) for method_nodes in nodes_by_method.values()), default=1)
 
+    # A source-order backward jump is not a correct definition of a loop.
+    # Compute cyclic regions from strongly connected components instead. This
+    # also handles do/while and irreducible bytecode without duplicate edges.
     is_loop_header = [0] * n_nodes
     is_in_loop = [0] * n_nodes
+    edges_by_method: dict[str, list[tuple[int, int]]] = defaultdict(list)
     for edge in edges:
-        if edge["edge_type"] != "CFG_BACK":
-            continue
         source = int(edge["source"])
         target = int(edge["target"])
         if not (0 <= source < n_nodes and 0 <= target < n_nodes):
             continue
-        if nodes[source]["method_id"] != nodes[target]["method_id"]:
-            continue
-        is_loop_header[target] = 1
-        start, end = sorted((source, target))
-        for node in nodes_by_method[str(nodes[source]["method_id"])]:
-            node_id = int(node["id"])
-            if start <= node_id <= end:
+        method_id = str(nodes[source]["method_id"])
+        if method_id == str(nodes[target]["method_id"]):
+            edges_by_method[method_id].append((source, target))
+
+    for method_id, method_nodes in nodes_by_method.items():
+        node_ids = {int(node["id"]) for node in method_nodes}
+        method_edges = edges_by_method.get(method_id, [])
+        adjacency = {node_id: [] for node_id in node_ids}
+        predecessors = {node_id: [] for node_id in node_ids}
+        for source, target in method_edges:
+            adjacency[source].append(target)
+            predecessors[target].append(source)
+
+        # Iterative Kosaraju avoids Python recursion limits on generated methods
+        # containing thousands of Jimple units.
+        order: list[int] = []
+        visited: set[int] = set()
+        for start in sorted(node_ids):
+            if start in visited:
+                continue
+            stack: list[tuple[int, bool]] = [(start, False)]
+            while stack:
+                node_id, expanded = stack.pop()
+                if expanded:
+                    order.append(node_id)
+                    continue
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                stack.append((node_id, True))
+                for successor in reversed(adjacency[node_id]):
+                    if successor not in visited:
+                        stack.append((successor, False))
+
+        components: list[set[int]] = []
+        assigned: set[int] = set()
+        for start in reversed(order):
+            if start in assigned:
+                continue
+            component: set[int] = set()
+            stack = [(start, False)]
+            while stack:
+                node_id, _ = stack.pop()
+                if node_id in assigned:
+                    continue
+                assigned.add(node_id)
+                component.add(node_id)
+                stack.extend((predecessor, False) for predecessor in predecessors[node_id] if predecessor not in assigned)
+            components.append(component)
+
+        for component in components:
+            cyclic = len(component) > 1 or any(
+                source == target and source in component for source, target in method_edges
+            )
+            if not cyclic:
+                continue
+            for node_id in component:
                 is_in_loop[node_id] = 1
+            headers = {
+                node_id
+                for node_id in component
+                if any(predecessor not in component for predecessor in predecessors[node_id])
+            }
+            # An SCC can be the method entry or be irreducible. It still needs
+            # a deterministic representative for the loop-header feature.
+            if not headers:
+                headers = {min(component)}
+            for node_id in headers:
+                is_loop_header[node_id] = 1
 
     for method_nodes in nodes_by_method.values():
         method_size = len(method_nodes)
@@ -495,7 +684,14 @@ def make_placeholder_graph(dataset_name: str, class_name: str, source_path: str,
             "is_synthetic": True,
         },
     ]
-    edges = [{"source": 0, "target": 1, "edge_type": "CFG_NEXT", "edge_type_id": EDGE_TYPE_TO_ID["CFG_NEXT"]}]
+    edges = [
+        {
+            "source": 0,
+            "target": 1,
+            "edge_type": "CFG_FALLTHROUGH",
+            "edge_type_id": EDGE_TYPE_TO_ID["CFG_FALLTHROUGH"],
+        }
+    ]
     annotate_cfg_roles(nodes, edges)
     graph = {
         "graph_id": gid,
@@ -569,17 +765,29 @@ def extract_dataset_cfgs(
     build_dir: Path,
     logs_dir: Path,
     java_classes_dir: Path,
+    release_jars: list[Path],
+    release_status: str,
 ) -> tuple[dict[str, Any], list[dict[str, str]], dict[str, Any]]:
     dataset_build_dir = build_dir / sanitize_filename(dataset_name)
     classes_dir = dataset_build_dir / "classes"
     argfile = dataset_build_dir / "javac_sources.txt"
     class_list = dataset_build_dir / "class_list.txt"
     soot_tsv = dataset_build_dir / "soot_cfg.tsv"
+    # Compile the complete version tree so mapped classes can resolve sibling
+    # source dependencies. Only mapped classes are passed to Soot afterwards.
     source_level = choose_ecj_level(source_root)
     ecj_log = logs_dir / f"{sanitize_filename(dataset_name)}_ecj_compile.log"
     soot_log = logs_dir / f"{sanitize_filename(dataset_name)}_soot_extractor.log"
 
-    compile_issues = compile_sources(repo_root, dataset_name, source_root, classes_dir, argfile, ecj_log, source_level)
+    compile_issues = compile_sources(
+        repo_root,
+        dataset_name,
+        source_root,
+        classes_dir,
+        argfile,
+        ecj_log,
+        source_level,
+    )
     class_names = sorted(mapped["name"].astype(str).tolist())
     class_list.write_text("\n".join(class_names) + "\n", encoding="utf-8")
 
@@ -590,7 +798,7 @@ def extract_dataset_cfgs(
             "-cp",
             os.pathsep.join([str(java_classes_dir), str(soot_jar)]),
             "soot_cfg_extractor",
-            str(classes_dir),
+            os.pathsep.join([*(str(path) for path in release_jars), str(classes_dir)]),
             str(class_list),
             str(source_root),
             str(soot_tsv),
@@ -630,6 +838,9 @@ def extract_dataset_cfgs(
         "ecj_compile_log": str(ecj_log),
         "soot_extractor_log": str(soot_log),
         "soot_returncode": int(result.returncode),
+        "bytecode_precedence": "official_release_then_source_build" if release_jars else "source_build",
+        "official_release_status": release_status,
+        "official_release_jars": [str(path) for path in release_jars],
     }
     return parsed, all_issues, dataset_meta
 
@@ -720,6 +931,52 @@ def validate_outputs(index_rows: list[dict[str, Any]]) -> list[dict[str, str]]:
             issues.append({"graph_id": row["graph_id"], "issue": f"edge_type_shape:{edge_type.shape}"})
         if not np.isfinite(x).all():
             issues.append({"graph_id": row["graph_id"], "issue": "non_finite_x"})
+        if node_type_id.size and (node_type_id.min() < 0 or node_type_id.max() >= len(NODE_TYPE_TO_ID)):
+            issues.append({"graph_id": row["graph_id"], "issue": "node_type_id_out_of_bounds"})
+        if stmt_kind_id.size and (stmt_kind_id.min() < 0 or stmt_kind_id.max() >= len(STMT_KIND_TO_ID)):
+            issues.append({"graph_id": row["graph_id"], "issue": "stmt_kind_id_out_of_bounds"})
+        if invoke_kind_id.size and (invoke_kind_id.min() < 0 or invoke_kind_id.max() >= len(INVOKE_KIND_TO_ID)):
+            issues.append({"graph_id": row["graph_id"], "issue": "invoke_kind_id_out_of_bounds"})
+        if edge_type.size and (edge_type.min() < 0 or edge_type.max() >= len(EDGE_TYPE_TO_ID)):
+            issues.append({"graph_id": row["graph_id"], "issue": "edge_type_id_out_of_bounds"})
+        if edge_index.size and (edge_index.min() < 0 or edge_index.max() >= row["num_nodes"]):
+            issues.append({"graph_id": row["graph_id"], "issue": "edge_index_out_of_bounds"})
+
+        graph = json.loads(Path(row["graph_json"]).read_text(encoding="utf-8"))
+        nodes = {int(node["id"]): node for node in graph["nodes"]}
+        seen_edges: set[tuple[int, int, str]] = set()
+        for edge in graph["edges"]:
+            source = int(edge["source"])
+            target = int(edge["target"])
+            edge_name = str(edge["edge_type"])
+            edge_key = (source, target, edge_name)
+            if edge_key in seen_edges:
+                issues.append({"graph_id": row["graph_id"], "issue": "duplicate_typed_edge"})
+            seen_edges.add(edge_key)
+            if source not in nodes or target not in nodes:
+                continue
+            if nodes[source]["method_id"] != nodes[target]["method_id"]:
+                issues.append({"graph_id": row["graph_id"], "issue": "cross_method_cfg_edge"})
+            if edge_name == "CFG_ENTRY" and nodes[source]["node_type"] != "ENTRY":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_entry_edge"})
+            elif edge_name in {"CFG_BRANCH_TRUE", "CFG_BRANCH_FALSE"} and nodes[source]["node_type"] != "CONDITION":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_branch_edge"})
+            elif edge_name.startswith("CFG_SWITCH_") and nodes[source]["node_type"] != "SWITCH":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_switch_edge"})
+            elif edge_name == "CFG_GOTO" and nodes[source]["stmt_kind"] != "GOTO":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_goto_edge"})
+            elif edge_name == "CFG_RETURN" and (
+                nodes[source]["node_type"] != "RETURN" or nodes[target]["node_type"] != "EXIT"
+            ):
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_return_edge"})
+            elif edge_name == "CFG_THROW" and (
+                nodes[source]["node_type"] != "THROW" or nodes[target]["node_type"] != "EXIT"
+            ):
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_throw_edge"})
+            elif edge_name == "CFG_EXCEPTION_HANDLER" and nodes[target]["node_type"] != "CATCH":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_exception_handler_edge"})
+            elif edge_name == "CFG_EXCEPTION_EXIT" and nodes[target]["node_type"] != "EXIT":
+                issues.append({"graph_id": row["graph_id"], "issue": "invalid_exception_exit_edge"})
     return issues
 
 
@@ -730,6 +987,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preprocess-summary", type=Path, default=Path("outputs/promise/promise_preprocess_summary.json"))
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/cfg"))
     parser.add_argument("--build-dir", type=Path, default=Path("build/promise_cfg_soot"))
+    parser.add_argument(
+        "--release-cache-dir",
+        type=Path,
+        default=Path("build/promise_cfg_release_cache"),
+        help="Persistent cache for checksum-verified official release bytecode.",
+    )
     parser.add_argument("--dataset-name", help="Optional dataset filter, e.g. ant-1.6")
     parser.add_argument("--no-clean", action="store_true", help="Do not clear existing graph/tensor/log/build files first.")
     return parser.parse_args()
@@ -742,6 +1005,11 @@ def main() -> None:
     summary_path = (repo_root / args.preprocess_summary).resolve() if not args.preprocess_summary.is_absolute() else args.preprocess_summary.resolve()
     output_dir = (repo_root / args.output_dir).resolve() if not args.output_dir.is_absolute() else args.output_dir.resolve()
     build_dir = (repo_root / args.build_dir).resolve() if not args.build_dir.is_absolute() else args.build_dir.resolve()
+    release_cache_dir = (
+        (repo_root / args.release_cache_dir).resolve()
+        if not args.release_cache_dir.is_absolute()
+        else args.release_cache_dir.resolve()
+    )
 
     if not input_csv.exists():
         raise FileNotFoundError(f"Missing CFG input CSV: {input_csv}. Run scripts/preprocess_promise.py first.")
@@ -770,6 +1038,11 @@ def main() -> None:
         if source_root is None:
             raise ValueError(f"Missing source root for dataset {dataset_name}")
 
+        release_jars, release_status = ensure_official_release_bytecode(
+            dataset_name,
+            release_cache_dir,
+        )
+
         parsed, issues, dataset_meta = extract_dataset_cfgs(
             repo_root=repo_root,
             dataset_name=dataset_name,
@@ -778,6 +1051,8 @@ def main() -> None:
             build_dir=build_dir,
             logs_dir=logs_dir,
             java_classes_dir=java_classes_dir,
+            release_jars=release_jars,
+            release_status=release_status,
         )
         parse_failures.extend(issues)
 
@@ -796,18 +1071,17 @@ def main() -> None:
                 result = make_placeholder_graph(dataset_name, class_name, source_path, label)
                 extraction_mode = "placeholder"
                 placeholder_count += 1
-            index_rows.append(
-                write_graph_outputs(
-                    result=result,
-                    dataset_name=dataset_name,
-                    class_name=class_name,
-                    source_path=source_path,
-                    label=label,
-                    extraction_mode=extraction_mode,
-                    graphs_dir=graphs_dir,
-                    tensors_dir=tensors_dir,
-                )
+            index_row = write_graph_outputs(
+                result=result,
+                dataset_name=dataset_name,
+                class_name=class_name,
+                source_path=source_path,
+                label=label,
+                extraction_mode=extraction_mode,
+                graphs_dir=graphs_dir,
+                tensors_dir=tensors_dir,
             )
+            index_rows.append(index_row)
 
         unresolved_classes = sorted(parsed_ids - set(dataset_rows["name"].astype(str)))
         if unresolved_classes:
@@ -826,6 +1100,7 @@ def main() -> None:
                 "graphs": int(len(dataset_rows)),
                 "soot_graphs": int(soot_count),
                 "placeholder_graphs": int(placeholder_count),
+                "cfg_edges": int(sum(row["num_edges"] for row in index_rows if row["dataset_name"] == dataset_name)),
                 "issues": int(sum(1 for issue in issues if issue.get("dataset_name") == dataset_name)),
             }
         )
@@ -869,10 +1144,13 @@ def main() -> None:
         "invoke_kind_vocab_size": len(INVOKE_KIND_TO_ID),
         "edge_type_vocab_size": len(EDGE_TYPE_TO_ID),
         "backend": "soot",
+        "graph_view": "cfg",
+        "official_release_cache_dir": str(release_cache_dir),
         "datasets": dataset_summaries,
     }
 
-    (output_dir / "cfg_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary_path = output_dir / "cfg_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (output_dir / "parse_failures.json").write_text(json.dumps(parse_failures, indent=2), encoding="utf-8")
     (output_dir / "validation_issues.json").write_text(json.dumps(validation_issues, indent=2), encoding="utf-8")
     print(
@@ -882,7 +1160,7 @@ def main() -> None:
         f"issues={summary['parse_failures']} validation_issues={summary['validation_issues']}"
     )
     print(f"index={cfg_index_path}")
-    print(f"summary={output_dir / 'cfg_summary.json'}")
+    print(f"summary={summary_path}")
 
 
 if __name__ == "__main__":

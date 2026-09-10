@@ -433,7 +433,7 @@ def train_model(
 
         history.append(row)
         print(
-            f"cfg_epoch={epoch:03d} train_loss={train_loss:.4f} "
+            f"behavior_epoch={epoch:03d} train_loss={train_loss:.4f} "
             + (f"val_loss={val_loss:.4f} " if val_loader is not None else "")
             + f"train_f1={train_metrics['f1']:.4f}",
             flush=True,

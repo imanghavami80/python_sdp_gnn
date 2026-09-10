@@ -31,11 +31,13 @@ specific stage.
 | --- | --- | --- |
 | Exploratory global AST embeddings | `scripts/generate_ast_embeddings.py` | [Global AST workflow](training/generate_ast_embeddings.md) |
 | Standalone AST LOPO | `scripts/evaluate_ast_lopo.py` | [AST LOPO](training/evaluate_ast_lopo.md) |
-| Standalone CFG LOPO | `scripts/evaluate_cfg_lopo.py` | [CFG LOPO](training/evaluate_cfg_lopo.md) |
+| Legacy standalone behavioral LOPO | `scripts/evaluate_cfg_lopo.py` | [Behavioral LOPO](training/evaluate_cfg_lopo.md) |
 | Shared NDG operations | `src/thesis_project/training/ndg.py` | [NDG training utilities](training/ndg_training.md) |
 | Leakage-safe clustering | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
 | Automated verification | `tests/` | [Testing](reference/testing.md) |
 | Improvement strategy | Research/evaluation guidance | [Model improvement](reference/model_improvement.md) |
+| CFG-view progress report | Supervisor-facing experiment summary | [CFG-view report](reports/cfg_view_progress_report.md) |
+| Short CFG-view report | Concise supervisor summary | [Short CFG-view report](reports/cfg_view_progress_report_short.md) |
 
 ## Data Granularity
 
@@ -48,5 +50,5 @@ specific stage.
 
 `evaluate_ndg_nested_lopo.py` is the primary leakage-safe research evaluation. It trains
 AST, CFG, and NDG models inside every outer project fold. Outputs from the
-standalone AST and CFG scripts are useful for diagnostics, but must not replace
+standalone AST and behavioral scripts are useful for diagnostics, but must not replace
 fold-specific embeddings in the final experiment.

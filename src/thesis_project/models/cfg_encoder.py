@@ -1,4 +1,4 @@
-"""Edge-aware GAT encoder and attention pooling for file-level CFGs."""
+"""Edge-aware GAT encoder for file-level control-flow graphs."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ class CFGEncoderConfig:
 
 
 class CFGEdgeAwareGATEncoder(nn.Module):
-    """Return one edge-aware GAT embedding per file-level CFG."""
+    """Return one embedding per exception-aware file-level CFG."""
 
     def __init__(self, config: CFGEncoderConfig) -> None:
         super().__init__()
@@ -197,10 +197,29 @@ class CFGEdgeAwareGATEncoder(nn.Module):
         edge_attr = self.build_edge_attr(edge_type, edge_index.size(1))
         h = self.input_projection(self.build_node_input(x, node_type_id, stmt_kind_id, invoke_kind_id))
 
+        return self._message_pass(
+            h,
+            edge_index,
+            edge_attr,
+            self.convs,
+            self.norms,
+            return_edge_attention,
+        )
+
+    def _message_pass(
+        self,
+        h: Tensor,
+        edge_index: Tensor,
+        edge_attr: Tensor,
+        convs: nn.ModuleList,
+        norms: nn.ModuleList,
+        return_edge_attention: bool,
+    ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
+        """Apply one relation-family stack with residual node updates."""
         attention_info: dict[str, Tensor] = {}
-        for layer_idx, (conv, norm) in enumerate(zip(self.convs, self.norms, strict=True)):
+        for layer_idx, (conv, norm) in enumerate(zip(convs, norms, strict=True)):
             residual = h
-            if return_edge_attention and layer_idx == len(self.convs) - 1:
+            if return_edge_attention and layer_idx == len(convs) - 1:
                 h, (att_edge_index, edge_attention) = conv(
                     h,
                     edge_index,

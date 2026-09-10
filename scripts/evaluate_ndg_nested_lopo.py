@@ -100,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         "--fusion-stage",
         choices=["early", "late"],
         default="early",
-        help="Fuse AST/CFG before NDG propagation (current implementation) or after independent NDG encoding (proposal).",
+        help="Fuse AST/CFG before NDG propagation or after independent NDG encoding (proposal).",
     )
     parser.add_argument(
         "--cluster-features",
@@ -1045,6 +1045,13 @@ def main() -> None:
         resolve_path(args.cfg_edge_vocab),
         resolve_path(args.cfg_feature_names),
     )
+    required_cfg_relations = {"CFG_ENTRY", "CFG_FALLTHROUGH", "CFG_BRANCH_TRUE", "CFG_EXCEPTION_HANDLER"}
+    missing_cfg_relations = sorted(required_cfg_relations - set(cfg_edge_vocab))
+    if missing_cfg_relations:
+        raise ValueError(
+            f"CFG edge vocabulary is missing required relations: {missing_cfg_relations}. "
+            "Run scripts/extract_promise_cfg.py first."
+        )
     if set(all_projects) != set(ast_index_all["dataset_name"].astype(str).unique()):
         raise ValueError("AST and NDG project sets differ")
     missing_ast_projects = sorted(set(all_projects) - set(ast_index["dataset_name"].astype(str).unique()))
@@ -1118,6 +1125,7 @@ def main() -> None:
     embedding_index.to_csv(output_dir / "ndg_node_embedding_index.csv", index=False)
     summary = {
         "protocol": "strict_nested_LOPO",
+        "behavioral_view": "CFG",
         "prediction_granularity": "file_node",
         "outer_test_projects": selected_test_projects,
         "all_projects": all_projects,
@@ -1142,6 +1150,10 @@ def main() -> None:
         "model_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "model"),
         "baseline_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "baseline"),
         "ndg_encoder_config_template": asdict(ndg_config),
+        "cfg_encoder": {
+            "architecture": "single edge-aware GATv2 encoder over typed exceptional control flow",
+            "edge_types": cfg_edge_vocab,
+        },
         "cluster_features": {
             "enabled": args.cluster_features,
             "algorithm": (

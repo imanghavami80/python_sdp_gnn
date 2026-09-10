@@ -6,7 +6,8 @@ sources of software information:
 - **Software metrics:** file-level measurements from PROMISE, such as LOC, WMC,
   CBO, RFC, and complexity.
 - **AST:** the syntactic structure of each Java file.
-- **CFG:** the control-flow behavior of methods in each Java file.
+- **CFG:** typed normal and exceptional execution flow inside methods in each
+  Java file.
 - **NDG:** typed dependencies between files in the same project.
 
 The final model performs **node-level prediction on each project NDG**. Every
@@ -182,10 +183,15 @@ model masks these fallback views by default.
 python scripts/extract_promise_cfg.py
 ```
 
-This compiles the Java projects with partial-error recovery and uses Soot to
-build method-level statement CFGs. Method CFGs are aggregated into one CFG for
-each file. Nodes describe statements and operations; typed edges describe
-normal, branch, return, exception, loop, and switch flow.
+This compiles each complete project-version source tree with partial-error
+recovery, then builds a statement-level Soot CFG for every mapped file. Each
+edge has one precise execution meaning: entry, fall-through, true/false branch,
+goto, switch case/default, return, explicit throw, caught exception, or escaping
+exception. Loop features are derived from graph cycles rather than source order.
+For Camel 1.6 and Synapse 1.2, checksum-verified bytecode from the matching
+official Apache release takes precedence over invalid compiler-error stubs and
+is cached after the first run. A missing archive or checksum failure stops the
+extractor so an experiment cannot silently revert to lower CFG coverage.
 
 Main outputs:
 
@@ -322,7 +328,7 @@ python scripts/generate_ast_embeddings.py
 # Project-held-out AST evaluation
 python scripts/evaluate_ast_lopo.py
 
-# Project-held-out CFG evaluation, excluding placeholder CFGs
+# Legacy project-held-out behavioral-graph evaluation
 python scripts/evaluate_cfg_lopo.py
 ```
 
@@ -333,8 +339,8 @@ because that would leak information from held-out projects.
 ## Model Summary
 
 - **AST encoder:** GIN with node-type embeddings and attention pooling.
-- **CFG encoder:** edge-aware GATv2 with node, statement, invocation, and CFG
-  edge types, followed by attention pooling.
+- **CFG encoder:** one edge-aware GATv2 stack over typed control-flow relations,
+  followed by attention pooling.
 - **NDG encoder:** relational GATv2 with selectable early or late multi-view
   fusion at file-node level.
 

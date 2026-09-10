@@ -20,7 +20,11 @@ At runtime it receives:
 - A path for its tab-separated output.
 
 Soot is configured to tolerate missing external dependencies through phantom
-references, which is necessary for legacy PROMISE projects.
+references, which is necessary for legacy PROMISE projects. Its first backend
+argument is a bytecode classpath rather than a single class directory. This
+lets the Python stage place checksum-verified, exact-release Camel/Synapse JARs
+before partial ECJ output, so an invalid compiler-error method is not accepted
+when valid official bytecode is available.
 
 ## Method Graph Construction
 
@@ -33,7 +37,8 @@ For every concrete method or constructor body:
 5. Connect ENTRY to graph heads.
 6. Convert normal and exceptional successors to typed edges.
 7. Connect returns and terminal paths to EXIT.
-8. Emit method, node, and edge records.
+8. Distinguish caught exception flow from exceptions escaping the method.
+9. Emit method, node, and edge records.
 
 The Python wrapper aggregates all emitted methods for one class/file.
 
@@ -53,9 +58,9 @@ inspection of source text.
 
 ## Edge Semantics
 
-The backend distinguishes normal flow, true and false branches, returns,
-exceptions, loop back edges, and switch targets. Python maps emitted names to
-stable IDs in `edge_type_vocab.json`.
+The backend distinguishes entry, fall-through, true and false branches, goto,
+switch targets, returns, explicit throws, caught exceptions, and escaping
+exceptions. Python maps emitted names to stable IDs in `edge_type_vocab.json`.
 
 ## Interchange Format
 
@@ -64,12 +69,13 @@ node, edge, class failure, and method failure records. This format keeps the Jav
 component independent from Python JSON and NumPy dependencies.
 
 If the format changes, update `parse_tsv` in `extract_promise_cfg.py` and add or
-update CFG tests in the same change.
+update behavioral graph tests in the same change.
 
 ## Failure Handling
 
 - A class load/body failure is emitted rather than terminating the project run.
 - Method-level failures remain associated with their class and signature.
+- Compiler-generated unresolved-problem method bodies are rejected.
 - The Python wrapper decides whether a real graph is sufficient or a tagged
   placeholder is required.
 
@@ -80,4 +86,3 @@ update CFG tests in the same change.
 - Keep record fields tab-safe through the escaping helper.
 - Maintain backward agreement between Java output columns and Python parsing.
 - Add new relation names to the Python vocabulary before emitting them.
-

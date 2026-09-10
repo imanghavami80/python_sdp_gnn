@@ -8,7 +8,8 @@
 
 This stage builds statement-level Control Flow Graphs using compiled Java
 bytecode and Soot. It does not infer control flow from regular expressions or
-construct an approximate CFG from the source AST.
+construct an approximate graph from the source AST. This is the project's only
+behavioral code graph; it contains control-flow relations only.
 
 Each method and constructor receives explicit `ENTRY` and `EXIT` nodes. Method
 graphs are aggregated into one file-level CFG so they align with PROMISE
@@ -23,8 +24,9 @@ file-level labels.
 ## Extraction Architecture
 
 ```text
-Mapped Java source
-  -> ECJ partial compilation with debug line information
+Complete project-version source tree
+  -> ECJ 3.32 partial compilation with debug line information
+  -> checksum-verified exact Apache release bytecode where configured
   -> Soot Jimple bodies
   -> method statement CFGs
   -> Python feature enrichment and validation
@@ -34,6 +36,15 @@ Mapped Java source
 ECJ uses partial-error recovery because the PROMISE projects are old and may
 have missing build dependencies. A nonzero ECJ status is logged. Soot can still
 recover real CFGs from the class files that were emitted.
+
+Camel 1.6 and Synapse 1.2 need a stronger recovery path because missing legacy
+dependencies cause ECJ to emit methods that only throw an unresolved-compilation
+error. The extractor downloads the matching official Apache binary release,
+verifies fixed SHA-256 checksums, caches only the required project JARs under
+`build/promise_cfg_release_cache`, and gives those exact-version classes
+precedence over partial ECJ output. This remains bytecode-derived CFG extraction;
+no approximate source parser or fabricated control flow is used. Other projects
+continue to use their source build.
 
 ## Node Data
 
@@ -52,18 +63,24 @@ position, method size, and loop membership.
 ## Edge Types
 
 ```text
-CFG_NEXT
-CFG_TRUE
-CFG_FALSE
-CFG_RETURN
-CFG_EXCEPTION
-CFG_BACK
+CFG_ENTRY
+CFG_FALLTHROUGH
+CFG_BRANCH_TRUE
+CFG_BRANCH_FALSE
+CFG_GOTO
 CFG_SWITCH_CASE
 CFG_SWITCH_DEFAULT
+CFG_RETURN
+CFG_THROW
+CFG_EXCEPTION_HANDLER
+CFG_EXCEPTION_EXIT
 ```
 
-The CFG encoder consumes these edge types directly through learned edge
-embeddings.
+Each possible transfer has one typed edge. Caught exceptions target a `CATCH`
+node; exceptions that leave a method target its synthetic `EXIT`. Loop
+membership is computed from strongly connected components, avoiding duplicate
+edges and the incorrect assumption that every source-order backward jump is a
+loop.
 
 ## Run
 
@@ -80,7 +97,10 @@ python scripts/extract_promise_cfg.py --help
 ```
 
 The extractor cleans its generated graph, tensor, log, and build directories by
-default. `--no-clean` should only be used deliberately.
+default. The separate verified-release cache is retained. `--no-clean` should
+only be used deliberately. Exact-release bytecode recovery is mandatory for
+configured projects. If a required archive is unavailable or fails checksum
+validation, extraction stops instead of silently reverting to lower coverage.
 
 ## Outputs
 
@@ -101,9 +121,20 @@ outputs/promise/cfg/logs/
 
 ## Validation
 
-The Python stage checks graph dimensions, method ENTRY/EXIT nodes, return-to-exit
-flow, condition branches, loop back edges, and vocabulary bounds. Problems are
-written to `validation_issues.json` rather than silently ignored.
+The Python stage checks tensor dimensions and bounds plus edge-specific
+invariants for entry, branch, goto, switch, return, throw, and exception flow.
+Problems are written to `validation_issues.json` rather than silently ignored.
+
+ECJ source paths are quoted in its argument file. This is required for legacy
+projects such as Log4j that contain source directories with spaces.
+The bundled ECJ was upgraded to a modular-JDK-aware release so legacy sources
+can resolve standard-library classes when extraction runs on current JDKs.
+Javadoc tags are ignored when detecting whether a project needs Java 5 source
+syntax, preserving valid identifiers such as `enum` in older Java sources.
+The complete version tree is compiled so mapped classes can resolve sibling
+sources; Soot still receives only the mapped benchmark classes.
+The summary records release-cache status, selected JAR paths, and bytecode
+precedence for every dataset.
 
 ## Placeholder Policy
 
@@ -117,5 +148,6 @@ retains the file node but masks its CFG view.
 
 - One indexed file-level graph per mapped input row.
 - Real and placeholder counts are reported separately.
+- CFG edge counts are reported per project.
 - Node, statement, invocation, and edge tensors match graph metadata.
 - Java compilation and Soot diagnostics remain available for auditing.

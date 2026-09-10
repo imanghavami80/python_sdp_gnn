@@ -16,6 +16,7 @@ public class soot_cfg_extractor {
     }
 
     private static String nodeType(Unit u) {
+        if (u instanceof IdentityStmt && ((IdentityStmt) u).getRightOp() instanceof CaughtExceptionRef) return "CATCH";
         if (u instanceof IfStmt) return "CONDITION";
         if (u instanceof TableSwitchStmt || u instanceof LookupSwitchStmt) return "SWITCH";
         if (u instanceof ReturnStmt || u instanceof ReturnVoidStmt) return "RETURN";
@@ -139,17 +140,11 @@ public class soot_cfg_extractor {
         ));
     }
 
-    private static boolean isBackEdge(Unit src, Unit dst, Map<Unit, Integer> uid) {
-        Integer srcId = uid.get(src);
-        Integer dstId = uid.get(dst);
-        return srcId != null && dstId != null && dstId <= srcId;
-    }
-
     private static void writeEdge(BufferedWriter w, String className, String methodId, int src, int dst, String edgeType) throws IOException {
         w.write("EDGE\t" + className + "\t" + methodId + "\t" + src + "\t" + dst + "\t" + edgeType + "\n");
     }
 
-    private static void writeSemanticEdge(
+    private static void writeUnitEdge(
             BufferedWriter w,
             String className,
             String methodId,
@@ -162,18 +157,15 @@ public class soot_cfg_extractor {
         Integer dst = uid.get(dstUnit);
         if (src == null || dst == null) return;
         writeEdge(w, className, methodId, src, dst, edgeType);
-        if (isBackEdge(srcUnit, dstUnit, uid) && !"CFG_BACK".equals(edgeType)) {
-            writeEdge(w, className, methodId, src, dst, "CFG_BACK");
-        }
     }
 
     public static void main(String[] args) throws Exception {
         if (args.length != 4) {
-            System.err.println("Usage: soot_cfg_extractor <classes_dir> <class_list_txt> <source_root> <output_tsv>");
+            System.err.println("Usage: soot_cfg_extractor <bytecode_classpath> <class_list_txt> <source_root> <output_tsv>");
             System.exit(2);
         }
 
-        String classesDir = args[0];
+        String bytecodeClasspath = args[0];
         Path classListPath = Paths.get(args[1]);
         String sourceRoot = args[2];
         Path outPath = Paths.get(args[3]);
@@ -187,7 +179,7 @@ public class soot_cfg_extractor {
         Options.v().set_output_format(Options.output_format_none);
         Options.v().set_keep_line_number(true);
         Options.v().set_src_prec(Options.src_prec_only_class);
-        String cp = classesDir + File.pathSeparator + sourceRoot + File.pathSeparator + System.getProperty("java.class.path");
+        String cp = bytecodeClasspath + File.pathSeparator + sourceRoot + File.pathSeparator + System.getProperty("java.class.path");
         Options.v().set_soot_classpath(cp);
         Scene.v().loadBasicClasses();
 
@@ -216,6 +208,19 @@ public class soot_cfg_extractor {
                             b = m.retrieveActiveBody();
                         } catch (Exception ex) {
                             w.write("MFAIL\t" + className + "\t" + esc(m.getSubSignature()) + "\t" + esc(ex.toString()) + "\n");
+                            mIndex++;
+                            continue;
+                        }
+
+                        boolean compilerProblemBody = false;
+                        for (Unit u : b.getUnits()) {
+                            if (u.toString().contains("Unresolved compilation problem")) {
+                                compilerProblemBody = true;
+                                break;
+                            }
+                        }
+                        if (compilerProblemBody) {
+                            w.write("MFAIL\t" + className + "\t" + esc(m.getSubSignature()) + "\tcompiler_problem_body\n");
                             mIndex++;
                             continue;
                         }
@@ -249,7 +254,7 @@ public class soot_cfg_extractor {
                         for (Unit h : g.getHeads()) {
                             Integer hid = uid.get(h);
                             if (hid != null) {
-                                writeEdge(w, className, methodId, entry, hid, "CFG_NEXT");
+                                writeEdge(w, className, methodId, entry, hid, "CFG_ENTRY");
                             }
                         }
 
@@ -268,8 +273,8 @@ public class soot_cfg_extractor {
                                 for (Unit s : succs) {
                                     if (!uid.containsKey(s)) continue;
                                     hasAnyOut = true;
-                                    String et = s.equals(t) ? "CFG_TRUE" : "CFG_FALSE";
-                                    writeSemanticEdge(w, className, methodId, u, s, et, uid);
+                                    String et = s.equals(t) ? "CFG_BRANCH_TRUE" : "CFG_BRANCH_FALSE";
+                                    writeUnitEdge(w, className, methodId, u, s, et, uid);
                                 }
                             } else if (u instanceof TableSwitchStmt || u instanceof LookupSwitchStmt) {
                                 Unit defaultTarget;
@@ -282,14 +287,19 @@ public class soot_cfg_extractor {
                                     if (!uid.containsKey(s)) continue;
                                     hasAnyOut = true;
                                     String et = s.equals(defaultTarget) ? "CFG_SWITCH_DEFAULT" : "CFG_SWITCH_CASE";
-                                    writeSemanticEdge(w, className, methodId, u, s, et, uid);
+                                    writeUnitEdge(w, className, methodId, u, s, et, uid);
+                                }
+                            } else if (u instanceof GotoStmt) {
+                                for (Unit s : succs) {
+                                    if (!uid.containsKey(s)) continue;
+                                    hasAnyOut = true;
+                                    writeUnitEdge(w, className, methodId, u, s, "CFG_GOTO", uid);
                                 }
                             } else {
                                 for (Unit s : succs) {
                                     if (!uid.containsKey(s)) continue;
                                     hasAnyOut = true;
-                                    String et = isBackEdge(u, s, uid) ? "CFG_BACK" : "CFG_NEXT";
-                                    writeEdge(w, className, methodId, src, uid.get(s), et);
+                                    writeUnitEdge(w, className, methodId, u, s, "CFG_FALLTHROUGH", uid);
                                 }
                             }
 
@@ -298,14 +308,25 @@ public class soot_cfg_extractor {
                                 Integer tid = uid.get(s);
                                 if (tid == null) continue;
                                 hasAnyOut = true;
-                                writeEdge(w, className, methodId, src, tid, "CFG_EXCEPTION");
+                                writeEdge(w, className, methodId, src, tid, "CFG_EXCEPTION_HANDLER");
                             }
 
                             if (!hasAnyOut && !(u instanceof ThrowStmt)) {
-                                writeEdge(w, className, methodId, src, exit, "CFG_NEXT");
+                                writeEdge(w, className, methodId, src, exit, "CFG_FALLTHROUGH");
                             }
-                            if (u instanceof ThrowStmt) {
-                                writeEdge(w, className, methodId, src, exit, "CFG_EXCEPTION");
+
+                            boolean exceptionEscapes = false;
+                            for (ExceptionalUnitGraph.ExceptionDest dest : g.getExceptionDests(u)) {
+                                if (dest.getTrap() == null && !dest.getThrowables().isEmpty()) {
+                                    exceptionEscapes = true;
+                                    break;
+                                }
+                            }
+                            if (exceptionEscapes) {
+                                writeEdge(
+                                        w, className, methodId, src, exit,
+                                        u instanceof ThrowStmt ? "CFG_THROW" : "CFG_EXCEPTION_EXIT"
+                                );
                             }
                         }
                     }

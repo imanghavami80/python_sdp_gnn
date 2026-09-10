@@ -10,10 +10,20 @@ The current pipeline uses `projects_new`:
 - 12 PROMISE CSVs and 5,430 rows;
 - 5,303 rows mapped to Java source files;
 - 5,303 AST graphs, including 11 tagged fallbacks;
-- 5,303 CFG graphs: 4,945 Soot graphs and 358 tagged placeholders;
+- 5,303 CFG graphs: 4,573 validated Soot graphs and 730 tagged placeholders,
+  containing 1,753,339 typed normal and exceptional control-flow edges;
 - 12 NDGs with 5,303 file nodes and 36,986 typed dependency edges.
 
-These are extraction counts, not prediction results.
+These are extraction counts, not prediction results. The stricter current
+coverage excludes compiler-generated error bodies that older extraction runs
+incorrectly treated as real methods.
+
+Exact, checksum-verified Apache release bytecode now supplements incomplete
+source builds for Camel 1.6 and Synapse 1.2. This raised real-CFG coverage from
+4,046/5,303 (76.3%) to 4,573/5,303 (86.2%): Camel rose from 384 to 804 real
+graphs and Synapse from 121 to 228. The remaining Xerces placeholders are
+interfaces without executable method bodies, so fabricating CFGs for them would
+not be a valid coverage improvement.
 
 ## Completed Local Experiments
 
@@ -22,6 +32,12 @@ Leave-One-Project-Out (LOPO). Each of the 12 projects was held out once, giving
 12 test folds and predictions for all 5,303 mapped files. The held-out project
 was excluded from AST, CFG, and NDG training, metric normalization, epoch
 selection, and decision-threshold selection.
+
+The completed results below use earlier CFG artifacts. The canonical
+exception-aware CFG was regenerated with higher Camel/Synapse coverage after
+these runs, so these values remain historical baselines and must not be
+presented as results from the improved extractor. A new twelve-fold run is
+required for that comparison.
 
 The table reports the unweighted mean across the 12 held-out projects:
 

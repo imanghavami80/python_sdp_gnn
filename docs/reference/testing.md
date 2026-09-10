@@ -31,8 +31,15 @@ pooling behavior.
 
 ### `tests/test_cfg_encoder.py`
 
-Checks CFG input normalization, categorical and edge-type contracts, encoder and
-classifier shapes, and attention outputs.
+Checks CFG input normalization, categorical and typed-edge contracts, encoder
+and classifier shapes, ECJ paths containing spaces, source-level detection,
+TSV parsing, and graph-cycle loop detection.
+
+### `tests/test_extract_promise_cfg.py`
+
+Checks exact-release bytecode cache reuse, checksum-verified archive member
+extraction, and source-build behavior for projects without a configured official
+binary release.
 
 ### `tests/test_ndg_encoder.py`
 

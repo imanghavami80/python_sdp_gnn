@@ -41,10 +41,8 @@ already stored in logarithmic form by extraction.
 
 ## Edge Representation
 
-Every CFG relation ID receives a trainable edge embedding. GATv2 uses this edge
-vector when computing attention, allowing normal flow, true/false branches,
-returns, exceptions, loop back edges, and switch edges to affect messages
-differently.
+Every control-flow relation ID receives a trainable edge embedding. One GATv2
+stack processes the exception-aware directed CFG.
 
 ## Architecture
 
@@ -52,7 +50,7 @@ differently.
 2. Concatenate categorical and numeric node inputs.
 3. Project nodes into the hidden space.
 4. Embed CFG edge types.
-5. Apply stacked residual GATv2 layers with edge features.
+5. Apply the residual edge-aware GATv2 stack.
 6. Aggregate nodes with graph-level attention pooling.
 7. Project to the configured file embedding dimension.
 
@@ -97,4 +95,3 @@ embedding.
   unless a controlled semantic-view experiment requires them.
 - Update extractor vocabularies, tensor loaders, config, and tests together.
 - Never silently include placeholder CFGs as real training graphs.
-
