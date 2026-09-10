@@ -39,6 +39,7 @@ class ProjectGraph:
     y: Tensor
     edge_index: Tensor
     edge_type: Tensor
+    cluster_x: Tensor | None = None
 
     @property
     def num_nodes(self) -> int:
@@ -57,6 +58,7 @@ class ProjectGraph:
             y=self.y.to(device),
             edge_index=self.edge_index.to(device),
             edge_type=self.edge_type.to(device),
+            cluster_x=None if self.cluster_x is None else self.cluster_x.to(device),
         )
 
 
@@ -87,6 +89,10 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
     node_offset = 0
     edge_indices: list[Tensor] = []
     loss_weights: list[Tensor] = []
+    cluster_dims = {0 if graph.cluster_x is None else int(graph.cluster_x.size(1)) for graph in graphs}
+    if len(cluster_dims) != 1:
+        raise ValueError("All combined projects must have the same cluster feature dimension")
+    cluster_dim = cluster_dims.pop()
     for graph in graphs:
         edge_indices.append(graph.edge_index + node_offset)
         # Equalize total loss contribution across differently sized projects.
@@ -111,6 +117,11 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
         y=torch.cat([graph.y for graph in graphs]),
         edge_index=torch.cat(edge_indices, dim=1),
         edge_type=torch.cat([graph.edge_type for graph in graphs]),
+        cluster_x=(
+            torch.cat([graph.cluster_x for graph in graphs if graph.cluster_x is not None])
+            if cluster_dim
+            else None
+        ),
     )
 
 
@@ -143,14 +154,19 @@ def standardize_metrics(train_graph: ProjectGraph, *other_graphs: ProjectGraph) 
             y=graph.y,
             edge_index=graph.edge_index,
             edge_type=graph.edge_type,
+            cluster_x=graph.cluster_x,
         )
 
     return tuple(transform(graph) for graph in (train_graph, *other_graphs))
 
 
 def model_inputs(graph: ProjectGraph) -> dict[str, Tensor]:
+    cluster_x = graph.cluster_x
+    if cluster_x is None:
+        cluster_x = graph.metrics_x.new_empty((graph.num_nodes, 0))
     return {
         "metrics_x": graph.metrics_x,
+        "cluster_x": cluster_x,
         "ast_x": graph.ast_x,
         "cfg_x": graph.cfg_x,
         "view_mask": graph.view_mask,
@@ -299,3 +315,11 @@ def evaluate(model: NDGNodeClassifier, graph: ProjectGraph) -> tuple[np.ndarray,
         logits = model.classifier(embeddings).view(-1)
     probabilities = torch.sigmoid(logits).cpu().numpy().astype(np.float32)
     return embeddings.cpu().numpy().astype(np.float32), probabilities, graph.y.cpu().numpy().astype(np.int64)
+
+
+def evaluate_attention(model: NDGNodeClassifier, graph: ProjectGraph) -> dict[str, np.ndarray]:
+    """Return detached encoder diagnostics for a fitted project graph."""
+    model.eval()
+    with torch.no_grad():
+        _, attention = model.encoder(**model_inputs(graph), return_attention=True)
+    return {key: value.cpu().numpy() for key, value in attention.items()}

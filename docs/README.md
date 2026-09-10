@@ -23,6 +23,7 @@ specific stage.
 | AST GIN encoder | `src/thesis_project/models/ast_encoder.py` | [AST model](models/ast_encoder.md) |
 | Edge-aware CFG GAT | `src/thesis_project/models/cfg_encoder.py` | [CFG model](models/cfg_encoder.md) |
 | Multi-view relational NDG GAT | `src/thesis_project/models/ndg_encoder.py` | [NDG model](models/ndg_encoder.md) |
+| Cluster-derived metric features | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
 
 ## Supporting Training Workflows
 
@@ -32,6 +33,7 @@ specific stage.
 | Standalone AST LOPO | `scripts/evaluate_ast_lopo.py` | [AST LOPO](training/evaluate_ast_lopo.md) |
 | Standalone CFG LOPO | `scripts/evaluate_cfg_lopo.py` | [CFG LOPO](training/evaluate_cfg_lopo.md) |
 | Shared NDG operations | `src/thesis_project/training/ndg.py` | [NDG training utilities](training/ndg_training.md) |
+| Leakage-safe clustering | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
 | Automated verification | `tests/` | [Testing](reference/testing.md) |
 | Improvement strategy | Research/evaluation guidance | [Model improvement](reference/model_improvement.md) |
 

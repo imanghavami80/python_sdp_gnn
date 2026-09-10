@@ -17,6 +17,7 @@ class NDGEncoderConfig:
     ast_dim: int
     cfg_dim: int
     num_edge_types: int
+    cluster_dim: int = 0
     hidden_dim: int = 128
     output_dim: int = 128
     edge_type_embedding_dim: int = 16
@@ -30,6 +31,8 @@ class NDGEncoderConfig:
         for name in ("metrics_dim", "ast_dim", "cfg_dim", "num_edge_types", "hidden_dim", "output_dim"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.cluster_dim < 0:
+            raise ValueError("cluster_dim must be non-negative")
         if self.edge_type_embedding_dim <= 0:
             raise ValueError("edge_type_embedding_dim must be positive")
         if self.num_layers <= 0:
@@ -59,6 +62,55 @@ class ViewProjection(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         return self.network(x)
+
+
+class GatedClusterMetricEncoder(nn.Module):
+    """Inject an optional cluster view through a learnable residual gate."""
+
+    def __init__(
+        self,
+        metrics_dim: int,
+        cluster_dim: int,
+        hidden_dim: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.cluster_dim = cluster_dim
+        self.metrics_projection = ViewProjection(metrics_dim, hidden_dim, dropout)
+        if cluster_dim:
+            self.cluster_projection: ViewProjection | None = ViewProjection(
+                cluster_dim, hidden_dim, dropout
+            )
+            self.cluster_gate: nn.Module | None = nn.Sequential(
+                nn.LayerNorm(2 * hidden_dim),
+                nn.Linear(2 * hidden_dim, hidden_dim),
+                nn.GELU(),
+                nn.Linear(hidden_dim, 1),
+                nn.Sigmoid(),
+            )
+            # Begin near the no-cluster baseline and let evidence increase the
+            # cluster contribution instead of forcing it early in training.
+            nn.init.constant_(self.cluster_gate[-2].bias, -2.0)
+            self.output_norm: nn.Module = nn.LayerNorm(hidden_dim)
+        else:
+            self.cluster_projection = None
+            self.cluster_gate = None
+            self.output_norm = nn.Identity()
+
+    def forward(self, metrics_x: Tensor, cluster_x: Tensor) -> tuple[Tensor, Tensor]:
+        if cluster_x.shape != (metrics_x.size(0), self.cluster_dim):
+            raise ValueError(
+                f"cluster_x must have shape {(metrics_x.size(0), self.cluster_dim)}, "
+                f"received {tuple(cluster_x.shape)}"
+            )
+        metrics_state = self.metrics_projection(metrics_x)
+        if self.cluster_dim == 0:
+            return metrics_state, metrics_state.new_zeros((metrics_x.size(0), 1))
+        if self.cluster_projection is None or self.cluster_gate is None:
+            raise AssertionError("Cluster branch modules were not initialized")
+        cluster_state = self.cluster_projection(cluster_x)
+        gate = self.cluster_gate(torch.cat([metrics_state, cluster_state], dim=-1))
+        return self.output_norm(metrics_state + gate * cluster_state), gate
 
 
 class GatedMultiViewFusion(nn.Module):
@@ -125,13 +177,27 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.fusion = GatedMultiViewFusion(
-            metrics_dim=config.metrics_dim,
+            metrics_dim=config.hidden_dim if config.cluster_dim else config.metrics_dim,
             ast_dim=config.ast_dim,
             cfg_dim=config.cfg_dim,
             hidden_dim=config.hidden_dim,
             dropout=config.dropout,
         )
-        self.metrics_projection = ViewProjection(config.metrics_dim, config.hidden_dim, config.dropout)
+        if config.cluster_dim:
+            self.metric_encoder: GatedClusterMetricEncoder | None = GatedClusterMetricEncoder(
+                metrics_dim=config.metrics_dim,
+                cluster_dim=config.cluster_dim,
+                hidden_dim=config.hidden_dim,
+                dropout=config.dropout,
+            )
+            self.metrics_projection: ViewProjection | None = None
+        else:
+            # Preserve the original no-cluster architecture and initialization
+            # order so existing late-fusion results remain a valid baseline.
+            self.metric_encoder = None
+            self.metrics_projection = ViewProjection(
+                config.metrics_dim, config.hidden_dim, config.dropout
+            )
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
         head_dim = config.hidden_dim // config.heads
         self.convs = nn.ModuleList(
@@ -178,6 +244,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
     def forward(
         self,
         metrics_x: Tensor,
+        cluster_x: Tensor,
         ast_x: Tensor,
         cfg_x: Tensor,
         view_mask: Tensor,
@@ -189,6 +256,8 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         num_nodes = metrics_x.size(0)
         if metrics_x.shape != (num_nodes, self.config.metrics_dim):
             raise ValueError("metrics_x has an unexpected shape")
+        if cluster_x.shape != (num_nodes, self.config.cluster_dim):
+            raise ValueError("cluster_x has an unexpected shape")
         if ast_x.shape != (num_nodes, self.config.ast_dim):
             raise ValueError("ast_x has an unexpected shape")
         if cfg_x.shape != (num_nodes, self.config.cfg_dim):
@@ -202,17 +271,30 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
 
         if not torch.all(view_mask[:, 0]):
             raise ValueError("The metrics view must be available for every NDG node")
+        if self.config.cluster_dim:
+            if self.metric_encoder is None:
+                raise AssertionError("Cluster metric encoder was not initialized")
+            metric_state, cluster_gate = self.metric_encoder(metrics_x, cluster_x)
+        else:
+            if self.metrics_projection is None:
+                raise AssertionError("Metrics projection was not initialized")
+            metric_state = self.metrics_projection(metrics_x)
+            cluster_gate = metrics_x.new_zeros((num_nodes, 1))
         if self.config.fusion_stage == "early":
-            h, view_weights = self.fusion(metrics_x, ast_x, cfg_x, view_mask)
+            primary_view = metric_state if self.config.cluster_dim else metrics_x
+            h, view_weights = self.fusion(primary_view, ast_x, cfg_x, view_mask)
         else:
             # The NDG representation is learned from metrics and dependencies
             # without seeing AST/CFG.  Those independent graph embeddings are
             # fused only after NDG message passing, matching the proposal.
-            h = self.metrics_projection(metrics_x)
+            h = metric_state
             view_weights = metrics_x.new_zeros((num_nodes, 3))
         layer_outputs = [h]
         edge_attr = self.edge_type_embedding(edge_type.long())
-        attention: dict[str, Tensor] = {"view_weights": view_weights.detach()}
+        attention: dict[str, Tensor] = {
+            "view_weights": view_weights.detach(),
+            "cluster_gate": cluster_gate.detach(),
+        }
 
         for layer_index, (conv, norm) in enumerate(zip(self.convs, self.norms, strict=True)):
             residual = h

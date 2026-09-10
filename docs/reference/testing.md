@@ -40,6 +40,17 @@ Checks multi-view masking, early/late fusion behavior, node-level output shape, 
 project leakage guards, validation-project suitability, and training-only metric
 transformation.
 
+### `tests/test_cluster_features.py`
+
+Checks automatic and fixed cluster counts, output dimensions, soft-membership
+normalization, preservation of graph labels/topology, rejection of unprocessed
+non-finite metrics, transformation without refitting on test data, and
+leave-one-project-out encoding of training cluster risk. It also verifies that
+differently sized projects receive equal total cluster-fitting and risk weight,
+and exercises GMM with full, tied, diagonal, and spherical covariance.
+It also verifies fixed-size HDBSCAN features for both discovered-cluster and
+all-noise cases.
+
 ## Validation Beyond Unit Tests
 
 After changing extraction code:
@@ -59,6 +70,7 @@ After changing model or training code:
    training set.
 5. Confirm each fold records a validation-selected decision threshold.
 6. Confirm combined training projects have equal total `loss_weight`.
+7. Confirm each fold's `cluster_features.json` was fitted without the outer test project.
 
 ## Expected Warnings
 

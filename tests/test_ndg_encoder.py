@@ -25,12 +25,13 @@ from thesis_project.training import (
 )
 
 
-def make_config(fusion_stage: str = "early") -> NDGEncoderConfig:
+def make_config(fusion_stage: str = "early", cluster_dim: int = 0) -> NDGEncoderConfig:
     return NDGEncoderConfig(
         metrics_dim=20,
         ast_dim=16,
         cfg_dim=16,
         num_edge_types=14,
+        cluster_dim=cluster_dim,
         hidden_dim=32,
         output_dim=24,
         edge_type_embedding_dim=8,
@@ -45,6 +46,7 @@ def make_config(fusion_stage: str = "early") -> NDGEncoderConfig:
 def graph_inputs() -> dict[str, torch.Tensor]:
     return {
         "metrics_x": torch.randn(5, 20),
+        "cluster_x": torch.empty(5, 0),
         "ast_x": torch.randn(5, 16),
         "cfg_x": torch.randn(5, 16),
         "view_mask": torch.tensor(
@@ -85,6 +87,19 @@ def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
     assert torch.allclose(
         first_attention["ndg_embeddings"], second_attention["ndg_embeddings"], atol=1e-6
     )
+
+
+def test_cluster_features_use_a_separate_bounded_gate() -> None:
+    encoder = NDGMultiViewRelationalGATEncoder(make_config("late", cluster_dim=6))
+    encoder.eval()
+    inputs = graph_inputs()
+    inputs["cluster_x"] = torch.randn(5, 6)
+
+    _, attention = encoder(**inputs, return_attention=True)
+
+    assert attention["cluster_gate"].shape == (5, 1)
+    assert torch.all(attention["cluster_gate"] >= 0.0)
+    assert torch.all(attention["cluster_gate"] <= 1.0)
 
 
 def test_metrics_view_is_required() -> None:

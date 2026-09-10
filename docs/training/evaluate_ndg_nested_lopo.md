@@ -38,11 +38,15 @@ For each test project:
 5. Choose upstream epochs from the inner validation project.
 6. Retrain fresh AST and CFG models on all outer-training projects.
 7. Generate embeddings for outer-training files and the untouched test project.
-8. Train and select the NDG model using the same inner project boundary.
-9. Select the F1 decision threshold on that inner-validation project.
-10. Retrain a fresh NDG on all outer-training projects with equal total loss
+8. Select `K` and fit cluster features on inner-fit metrics, then transform the
+   inner-validation project with fixed centroids and inner-fit defect rates.
+9. Train and select the NDG model using the same inner project boundary.
+10. Select the F1 decision threshold on that inner-validation project.
+11. Refit clustering with the selected `K` on all outer-training metrics and
+    cross-fit risk for each outer-training project.
+12. Retrain a fresh NDG on all outer-training projects with equal total loss
     contribution from every project.
-11. Predict and encode every file node in the outer test project.
+13. Transform, predict, and encode every file node in the outer test project.
 
 This repeats until every project has been tested once, unless `--test-project`
 restricts the run.
@@ -55,6 +59,8 @@ The outer test project is excluded from:
 - CFG training and epoch selection.
 - NDG training and epoch selection.
 - Median imputation and standard scaling.
+- Cluster-count selection, centroids, and cluster-feature normalization.
+- Cluster defect-risk estimation.
 - Class weighting and majority-baseline selection.
 - Decision-threshold selection.
 
@@ -95,7 +101,11 @@ Main controls:
 --ast-batch-size --cfg-batch-size --lr --weight-decay
 --hidden-dim --embedding-dim --ast-layers --cfg-layers
 --ndg-layers --heads --dropout --attention-dropout
---fusion-stage --seed --device --test-project
+--fusion-stage --cluster-features --cluster-method --cluster-count
+--cluster-min --cluster-max --cluster-silhouette-sample-size --cluster-n-init
+--gmm-n-init --gmm-covariance-type --gmm-reg-covar
+--hdbscan-min-cluster-sizes --hdbscan-min-samples --cluster-risk-smoothing
+--seed --device --test-project
 ```
 
 The output directory is cleaned at startup. Safety checks reject broad targets
@@ -142,6 +152,7 @@ folds/<test-project>/ndg_encoder.pt
 folds/<test-project>/ast_selection_history.csv
 folds/<test-project>/cfg_selection_history.csv
 folds/<test-project>/ndg_selection_history.csv
+folds/<test-project>/cluster_features.json
 folds/<test-project>/test_node_embeddings.npy
 folds/<test-project>/test_node_predictions.csv
 ```

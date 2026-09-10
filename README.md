@@ -27,17 +27,18 @@ PROMISE CSV + Java source code
               v
        Preprocess and map files
               |
-       +------+------+
-       |             |
-       v             v
-   Extract AST   Extract CFG with Soot
-       |             |
-       v             v
-   AST encoder    CFG encoder
-       |             |
-       +------+------+
+       +-------------+-------------+
+       |             |             |
+       v             v             v
+   Extract AST   Extract CFG    Software metrics
+       |          with Soot          |
+       v             |               v
+   AST encoder       v        Training-only k-means++ / GMM / HDBSCAN
+                 CFG encoder   cluster geometry + risk
+       |             |               |
+       +-------------+---------------+
               |
-Software metrics + AST embedding + CFG embedding
+Gated metrics/cluster branch + AST embedding + CFG embedding
               |
               v
      Project-level typed NDG
@@ -56,15 +57,15 @@ files cannot influence training, normalization, or model selection.
 ## Repository Layout
 
 ```text
-projects_new/              12-project PROMISE benchmark and Java source code
-projects_old/              Previous dataset releases; not used by default
-scripts/                   Preprocessing, extraction, and evaluation commands
-docs/                      File-by-file developer documentation
-src/thesis_project/models/ AST, CFG, and NDG model implementations
-src/thesis_project/training/ Shared leakage-safe training utilities
-tests/                     Automated tests
-tools/                     Java analysis dependencies used by CFG extraction
-outputs/                   Generated datasets, graphs, tensors, and results
+projects_new/                 12-project PROMISE benchmark and Java source code
+projects_old/                 Previous dataset releases; not used by default
+scripts/                      Preprocessing, extraction, and evaluation commands
+docs/                         File-by-file developer documentation
+src/thesis_project/models/    AST, CFG, and NDG model implementations
+src/thesis_project/training/  Shared leakage-safe training utilities
+tests/                        Automated tests
+tools/                        Java analysis dependencies used by CFG extraction
+outputs/                      Generated datasets, graphs, tensors, and results
 ```
 
 `outputs/` is generated locally and is excluded from Git.
@@ -219,7 +220,8 @@ outputs/promise/ndg/ndg_summary.json
 ```
 
 At extraction time, NDG node tensors contain the 20 preprocessed metrics. The
-final evaluator adds fold-specific AST and CFG embeddings during training.
+final evaluator adds training-only cluster features and fold-specific AST and
+CFG embeddings. See [cluster-based features](docs/features/cluster_features.md).
 
 ### 5. Train and Evaluate the Final Model
 
@@ -235,18 +237,31 @@ For every outer LOPO fold, the evaluator:
 1. Holds out one complete project for testing.
 2. Uses another training project for inner epoch selection.
 3. Fits metric imputation and scaling only on training files.
-4. Trains the AST and CFG encoders without the outer test project.
-5. Generates fold-specific AST and CFG embeddings.
-6. Combines metrics and available embeddings at each NDG file node.
-7. Gives every training project equal total loss weight, preventing large
+4. Selects and fits k-means++, GMM, or HDBSCAN using only the appropriate training files,
+   then builds a separate cluster view from component distances, soft
+   memberships, outlier evidence, and cross-fitted cluster defect risk.
+5. Trains the AST and CFG encoders without the outer test project.
+6. Generates fold-specific AST and CFG embeddings.
+7. Injects the cluster view through a learnable residual gate, then combines
+   the resulting NDG view with the available AST and CFG embeddings.
+8. Gives every training project equal total loss weight, preventing large
    projects from dominating optimization.
-8. Selects the decision threshold using only the inner-validation project.
-9. Trains the relational NDG model and predicts the held-out project.
-10. Repeats the process until every project has been tested once.
+9. Selects the decision threshold using only the inner-validation project.
+10. Trains the relational NDG model and predicts the held-out project.
+11. Repeats the process until every project has been tested once.
 
 Use `--fusion-stage early` for the implementation design or
 `--fusion-stage late` for the proposal design. Write them to separate output
 directories and report both as a predeclared ablation.
+
+Cluster features are enabled by default. Use `--no-cluster-features` only for
+the required with/without-clustering ablation. Automatic selection considers
+`K=2..10`; `--cluster-count K` uses a predeclared fixed count. Select
+`--cluster-method kmeans` for silhouette-selected k-means++ or
+`--cluster-method gmm` for BIC-selected Gaussian mixtures, or
+`--cluster-method hdbscan` for relative-DBCV-selected density clustering.
+`--cluster-risk-smoothing` controls shrinkage of training-only cluster defect
+rates. Keep its default unless it is tuned entirely inside the nested protocol.
 
 Main results:
 
