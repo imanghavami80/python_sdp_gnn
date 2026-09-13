@@ -1,4 +1,4 @@
-# CFG Encoder
+# 10 — CFG Encoder
 
 **Implementation:** `src/thesis_project/models/cfg_encoder.py`
 

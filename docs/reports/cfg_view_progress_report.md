@@ -1,4 +1,11 @@
-# Progress Report: Development of the Behavioral Graph View
+# 21 — Progress Report: Development of the Behavioral Graph View
+
+Historical report: measurements below describe experiments completed before the
+scenario cleanup. Their generated graphs, predictions, and checkpoints were
+deleted with `outputs/` at the user's request. Only CFG v3 and late fusion are
+active now; clustering (none/simple/gated) and NDG structural features (off/on)
+are independent scenario choices. Tables are preserved as historical records,
+not new evaluation results.
 
 **Thesis context:** Multi-view cross-project software defect prediction using
 software metrics, AST, a behavioral graph, project-level NDG message passing,
@@ -145,7 +152,7 @@ The PDG experiment achieved macro-project F1 **0.4753**, MCC **0.0870**,
 G-Mean **0.2963**, ROC-AUC **0.6946**, PR-AUC **0.5852**, and Brier score
 **0.3025**. It did not outperform the simpler original CFG overall. The PDG
 implementation was therefore removed from the active pipeline, while its saved
-experiment results were retained as a negative ablation.
+experiment measurements are recorded here as a negative ablation.
 
 ## 4. Canonical Exception-Aware CFG (CFG v2)
 

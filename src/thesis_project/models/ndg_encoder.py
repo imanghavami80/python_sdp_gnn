@@ -18,6 +18,7 @@ class NDGEncoderConfig:
     cfg_dim: int
     num_edge_types: int
     cluster_dim: int = 0
+    cluster_mode: str = "none"
     ndg_structural_dim: int = 0
     hidden_dim: int = 128
     output_dim: int = 128
@@ -26,7 +27,6 @@ class NDGEncoderConfig:
     heads: int = 4
     dropout: float = 0.25
     attention_dropout: float = 0.15
-    fusion_stage: str = "early"
 
     def __post_init__(self) -> None:
         for name in ("metrics_dim", "ast_dim", "cfg_dim", "num_edge_types", "hidden_dim", "output_dim"):
@@ -46,8 +46,10 @@ class NDGEncoderConfig:
             raise ValueError("dropout must be in [0, 1)")
         if not 0.0 <= self.attention_dropout < 1.0:
             raise ValueError("attention_dropout must be in [0, 1)")
-        if self.fusion_stage not in {"early", "late"}:
-            raise ValueError("fusion_stage must be 'early' or 'late'")
+        if self.cluster_mode not in {"none", "simple", "gated"}:
+            raise ValueError("cluster_mode must be none, simple, or gated")
+        if (self.cluster_mode == "none") != (self.cluster_dim == 0):
+            raise ValueError("cluster_dim must be zero for none and positive for simple/gated")
 
 
 class ViewProjection(nn.Module):
@@ -205,14 +207,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
     def __init__(self, config: NDGEncoderConfig) -> None:
         super().__init__()
         self.config = config
-        self.fusion = GatedMultiViewFusion(
-            metrics_dim=config.hidden_dim if config.cluster_dim else config.metrics_dim,
-            ast_dim=config.ast_dim,
-            cfg_dim=config.cfg_dim,
-            hidden_dim=config.hidden_dim,
-            dropout=config.dropout,
-        )
-        if config.cluster_dim:
+        if config.cluster_mode == "gated":
             self.metric_encoder: GatedClusterMetricEncoder | None = GatedClusterMetricEncoder(
                 metrics_dim=config.metrics_dim,
                 cluster_dim=config.cluster_dim,
@@ -221,11 +216,9 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             )
             self.metrics_projection: ViewProjection | None = None
         else:
-            # Preserve the original no-cluster architecture and initialization
-            # order so existing late-fusion results remain a valid baseline.
             self.metric_encoder = None
             self.metrics_projection = ViewProjection(
-                config.metrics_dim, config.hidden_dim, config.dropout
+                config.metrics_dim + config.cluster_dim, config.hidden_dim, config.dropout
             )
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
         head_dim = config.hidden_dim // config.heads
@@ -312,24 +305,22 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
 
         if not torch.all(view_mask[:, 0]):
             raise ValueError("The metrics view must be available for every NDG node")
-        if self.config.cluster_dim:
+        if self.config.cluster_mode == "gated":
             if self.metric_encoder is None:
                 raise AssertionError("Cluster metric encoder was not initialized")
             metric_state, cluster_gate = self.metric_encoder(metrics_x, cluster_x)
         else:
             if self.metrics_projection is None:
                 raise AssertionError("Metrics projection was not initialized")
-            metric_state = self.metrics_projection(metrics_x)
+            metric_input = (
+                torch.cat([metrics_x, cluster_x], dim=-1)
+                if self.config.cluster_mode == "simple" else metrics_x
+            )
+            metric_state = self.metrics_projection(metric_input)
             cluster_gate = metrics_x.new_zeros((num_nodes, 1))
-        if self.config.fusion_stage == "early":
-            primary_view = metric_state if self.config.cluster_dim else metrics_x
-            h, view_weights = self.fusion(primary_view, ast_x, cfg_x, view_mask)
-        else:
-            # The NDG representation is learned from metrics and dependencies
-            # without seeing AST/CFG.  Those independent graph embeddings are
-            # fused only after NDG message passing, matching the proposal.
-            h = metric_state
-            view_weights = metrics_x.new_zeros((num_nodes, 3))
+        # AST and CFG enter only after independent NDG message passing.
+        h = metric_state
+        view_weights = metrics_x.new_zeros((num_nodes, 3))
         layer_outputs = [h]
         edge_attr = self.edge_type_embedding(edge_type.long())
         attention: dict[str, Tensor] = {
@@ -361,13 +352,10 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         else:
             structural_gate = metrics_x.new_zeros((num_nodes, 1))
         attention["ndg_structural_gate"] = structural_gate.detach()
-        if self.config.fusion_stage == "late":
-            fused, view_weights = self.late_fusion(ndg_embeddings, ast_x, cfg_x, view_mask)
-            embeddings = self.late_output_projection(fused)
-            attention["view_weights"] = view_weights.detach()
-            attention["ndg_embeddings"] = ndg_embeddings.detach()
-        else:
-            embeddings = ndg_embeddings
+        fused, view_weights = self.late_fusion(ndg_embeddings, ast_x, cfg_x, view_mask)
+        embeddings = self.late_output_projection(fused)
+        attention["view_weights"] = view_weights.detach()
+        attention["ndg_embeddings"] = ndg_embeddings.detach()
         if return_attention:
             return embeddings, attention
         return embeddings

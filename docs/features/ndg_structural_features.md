@@ -1,4 +1,4 @@
-# Handcrafted NDG Structural Features
+# 07 — Handcrafted NDG Structural Features
 
 **Implementations:** `scripts/extract_ndg_structural_features.py` and
 `src/thesis_project/features/ndg_structural.py`
@@ -61,6 +61,10 @@ the existing NDG model and increases structural influence only when training
 supports it. Each held-out file's gate value is saved as
 `ndg_structural_gate` for diagnostics.
 
+The branch is disabled by default. It is independent of clustering: enable it
+with none, simple, or gated cluster mode. When disabled, extraction outputs are
+not required.
+
 ## Commands
 
 Extract the features after creating the NDGs:
@@ -73,22 +77,18 @@ Run the proposed late-fusion experiment on CPU:
 
 ```bash
 .venv/bin/python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
   --ndg-structural-features \
-  --no-cluster-features \
-  --device cpu \
-  --output-dir outputs/promise/nested_lopo_late_ndg_structural
+  --cluster-mode none \
+  --device cpu
 ```
 
 Run the directly comparable ablation with the same evaluator and seed:
 
 ```bash
 .venv/bin/python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
   --no-ndg-structural-features \
-  --no-cluster-features \
-  --device cpu \
-  --output-dir outputs/promise/nested_lopo_late_no_ndg_structural
+  --cluster-mode none \
+  --device cpu
 ```
 
 Compare macro-project metrics across multiple seeds before claiming an

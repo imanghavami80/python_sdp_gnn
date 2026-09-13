@@ -1,4 +1,4 @@
-# Exploratory Global AST Embeddings
+# 14 — Exploratory Global AST Embeddings
 
 **Implementation:** `scripts/generate_ast_embeddings.py`
 
@@ -75,4 +75,3 @@ CSV has the same order.
 
 Use these embeddings for visualization or architecture debugging. Use strict
 nested LOPO for final defect-prediction claims.
-

@@ -1,4 +1,4 @@
-# Shared NDG Training Utilities
+# 12 — Shared NDG Training Utilities
 
 **Implementation:** `src/thesis_project/training/ndg.py`
 
@@ -60,14 +60,19 @@ training.
 
 ## Cluster-Derived Metric Features
 
-After leakage-safe standardization, `training/clustering.py` creates a separate
+When `--cluster-mode simple` or `gated` is selected, after leakage-safe standardization, `training/clustering.py` creates a separate
 k-means++, GMM, or HDBSCAN representation containing component/density features, soft
 memberships, outlier evidence, and smoothed cluster defect risk. It does not modify the 20
 original metrics. The clusterer is fitted only on the graph passed as training,
-with equal total fitting weight per project, and transforms validation/test
+with equal total project weights for k-means, balanced resampling for GMM,
+and unique nodes for HDBSCAN (risk remains project-weighted), and transforms validation/test
 graphs without refitting. Training-node
 risk is leave-one-project-out encoded. See [Cluster-Based NDG
 Features](../features/cluster_features.md).
+
+Clustering and NDG structural features can be enabled together. Disabled
+structural branches may be represented by `None` or a zero-width tensor; both
+remain disabled when training projects are combined.
 
 ## Optimization
 

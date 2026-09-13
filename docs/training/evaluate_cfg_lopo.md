@@ -1,4 +1,4 @@
-# Standalone CFG LOPO Evaluation
+# 16 — Standalone CFG LOPO Evaluation
 
 **Implementation:** `scripts/evaluate_cfg_lopo.py`
 
@@ -68,4 +68,3 @@ outputs/promise/embeddings/cfg_lopo/folds/<project>/split.json
 
 Use this workflow to evaluate CFG extraction and encoder quality. Do not use its
 precomputed embeddings in final nested NDG results.
-

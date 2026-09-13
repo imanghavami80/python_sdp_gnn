@@ -1,4 +1,4 @@
-# NDG Extraction
+# 06 — NDG Extraction
 
 **Implementation:** `scripts/extract_promise_ndg.py`
 

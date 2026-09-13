@@ -14,8 +14,12 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 import pandas as pd
+import numpy as np
+import evaluate_ndg_nested_lopo as pipeline
 
 from evaluate_ndg_nested_lopo import assert_outer_boundary, choose_validation_project, project_indices
+from evaluate_ndg_nested_lopo import parse_args, scenario_name, prepare_output_dir, validate_cfg_inputs
+from extract_promise_cfg import EDGE_TYPE_TO_ID
 from thesis_project.training import (
     ProjectGraph,
     binary_metrics,
@@ -27,7 +31,7 @@ from thesis_project.training import (
 
 
 def make_config(
-    fusion_stage: str = "early",
+    cluster_mode: str = "none",
     cluster_dim: int = 0,
     ndg_structural_dim: int = 0,
 ) -> NDGEncoderConfig:
@@ -45,7 +49,7 @@ def make_config(
         heads=4,
         dropout=0.0,
         attention_dropout=0.0,
-        fusion_stage=fusion_stage,
+        cluster_mode=cluster_mode,
     )
 
 
@@ -83,7 +87,7 @@ def test_ndg_classifier_returns_node_logits() -> None:
 
 
 def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
-    encoder = NDGMultiViewRelationalGATEncoder(make_config("late"))
+    encoder = NDGMultiViewRelationalGATEncoder(make_config())
     encoder.eval()
     inputs = graph_inputs()
     _, first_attention = encoder(**inputs, return_attention=True)
@@ -97,7 +101,7 @@ def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
 
 
 def test_cluster_features_use_a_separate_bounded_gate() -> None:
-    encoder = NDGMultiViewRelationalGATEncoder(make_config("late", cluster_dim=6))
+    encoder = NDGMultiViewRelationalGATEncoder(make_config("gated", cluster_dim=6))
     encoder.eval()
     inputs = graph_inputs()
     inputs["cluster_x"] = torch.randn(5, 6)
@@ -111,7 +115,7 @@ def test_cluster_features_use_a_separate_bounded_gate() -> None:
 
 def test_ndg_structural_features_use_a_separate_bounded_gate() -> None:
     encoder = NDGMultiViewRelationalGATEncoder(
-        make_config("late", ndg_structural_dim=6)
+        make_config(ndg_structural_dim=6)
     )
     encoder.eval()
     inputs = graph_inputs()
@@ -247,3 +251,125 @@ def test_g_mean_uses_sensitivity_and_specificity() -> None:
     )
 
     assert metrics["g_mean"] == pytest.approx(0.5 ** 0.5)
+
+
+@pytest.mark.parametrize("mode", ["none", "simple", "gated"])
+@pytest.mark.parametrize("structural", [False, True])
+def test_all_scenarios_train_and_preserve_late_fusion(mode: str, structural: bool) -> None:
+    config = make_config(mode, cluster_dim=6 if mode != "none" else 0,
+                         ndg_structural_dim=6 if structural else 0)
+    model = NDGNodeClassifier(NDGMultiViewRelationalGATEncoder(config), dropout=0.0)
+    inputs = graph_inputs()
+    inputs["cluster_x"] = torch.randn(5, config.cluster_dim)
+    inputs["ndg_structural_x"] = torch.randn(5, config.ndg_structural_dim)
+    loss = torch.nn.functional.binary_cross_entropy_with_logits(model(**inputs), torch.ones(5))
+    loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+    model.eval()
+    before, info = model.encoder(**inputs, return_attention=True)
+    inputs["ast_x"] *= 20
+    inputs["cfg_x"] *= -20
+    _, changed = model.encoder(**inputs, return_attention=True)
+    assert torch.allclose(info["ndg_embeddings"], changed["ndg_embeddings"])
+    if mode != "none":
+        inputs["cluster_x"] += torch.randn_like(inputs["cluster_x"])
+        _, changed = model.encoder(**inputs, return_attention=True)
+        assert not torch.allclose(info["ndg_embeddings"], changed["ndg_embeddings"])
+    assert torch.isfinite(before).all()
+    options = ["--cluster-mode", mode]
+    if structural:
+        options.append("--ndg-structural-features")
+    args = parse_args(options)
+    assert args.cluster_mode == mode and args.ndg_structural_features == structural
+    assert scenario_name(args).endswith("on" if structural else "off")
+
+
+def test_removed_fusion_switch_is_rejected() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--fusion-stage", "early"])
+
+
+def test_existing_results_are_not_overwritten(tmp_path: Path) -> None:
+    artifact = tmp_path / "results.json"
+    artifact.write_text("keep")
+    with pytest.raises(FileExistsError):
+        prepare_output_dir(tmp_path)
+    assert artifact.read_text() == "keep"
+
+
+def test_cfg_version_and_exact_relations_are_required(tmp_path: Path) -> None:
+    index = tmp_path / "graph_index.csv"
+    pd.DataFrame({"cfg_version": ["v3"]}).to_csv(index, index=False)
+    validate_cfg_inputs(index, EDGE_TYPE_TO_ID)
+    with pytest.raises(ValueError, match="CFG v3"):
+        validate_cfg_inputs(index, {**EDGE_TYPE_TO_ID, "DATA_DEPENDENCE": 99})
+    pd.DataFrame({"cfg_version": ["v2"]}).to_csv(index, index=False)
+    with pytest.raises(ValueError, match="CFG v3"):
+        validate_cfg_inputs(index, EDGE_TYPE_TO_ID)
+
+
+def test_disabled_structural_features_survive_combining_graphs() -> None:
+    inputs = graph_inputs()
+    graph = ProjectGraph(
+        dataset_name="sample", names=list("abcde"), source_paths=list("abcde"),
+        y=torch.zeros(5), loss_weight=torch.ones(5), **inputs,
+    )
+    train, test = standardize_ndg_structural_features(combine_graphs([graph]), graph)
+    assert train.ndg_structural_x is None
+    assert test.ndg_structural_x.shape == (5, 0)
+
+
+@pytest.mark.parametrize("mode", ["none", "simple", "gated"])
+@pytest.mark.parametrize("structural", [False, True])
+def test_nested_fold_feature_integration_and_saved_scenario(
+    mode: str, structural: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise real feature fitting, selection, retraining and prediction writes.
+
+    Upstream encoders supply small fixed embeddings to keep this integration
+    test independent of Java inputs and expensive AST/CFG training.
+    """
+    rng = np.random.default_rng(42)
+    args = parse_args(["--cluster-mode", mode, "--ndg-epochs", "1", "--patience", "1",
+                       "--embedding-dim", "16", "--hidden-dim", "32"])
+    args.ndg_structural_features = structural
+    if mode != "none":
+        args.cluster_count = 2
+        args.cluster_n_init = 1
+    projects = {}
+    lookup = {}
+    for name in ["a", "b", "c", "test"]:
+        names = [f"{name}_{i}" for i in range(12)]
+        projects[name] = pipeline.BaseNDGProject(
+            dataset_name=name, names=names, source_paths=names,
+            metrics_x=rng.normal(size=(12, 20)).astype(np.float32),
+            y=np.array([0, 1] * 6, dtype=np.float32),
+            edge_index=np.array([list(range(11)), list(range(1, 12))]),
+            edge_type=np.zeros(11, dtype=np.int64),
+            ndg_structural_x=rng.normal(size=(12, 6 if structural else 0)).astype(np.float32),
+        )
+        for node in names:
+            lookup[(name, node)] = rng.normal(size=16).astype(np.float32)
+    config = make_config(ndg_structural_dim=6 if structural else 0)
+
+    def upstream(*unused):
+        return lookup, lookup, torch.nn.Linear(1, 1), config, {
+            "history": [], "best_info": {"best_epoch": 1},
+        }
+
+    monkeypatch.setattr(pipeline, "train_ast_fold", upstream)
+    monkeypatch.setattr(pipeline, "train_cfg_fold", upstream)
+    row, predictions, embeddings = pipeline.run_outer_fold(
+        0, "test", list(projects), projects, pd.DataFrame(), {}, pd.DataFrame(),
+        ({}, {}, {}, {}), [], [str(i) for i in range(6)] if structural else [],
+        config, args, torch.device("cpu"), tmp_path,
+    )
+    assert len(predictions) == len(embeddings) == 12
+    assert np.isfinite(predictions.probability).all()
+    assert row["cluster_mode"] == mode
+    assert predictions.cluster_gate.notna().all() if mode == "gated" else predictions.cluster_gate.isna().all()
+    assert predictions.ndg_structural_gate.notna().all() if structural else predictions.ndg_structural_gate.isna().all()
+    checkpoint = torch.load(tmp_path / "folds/test/ndg_encoder.pt", weights_only=False)
+    assert checkpoint["encoder_config"]["cluster_mode"] == mode
+    assert checkpoint["encoder_config"]["ndg_structural_dim"] == (6 if structural else 0)
+    assert checkpoint["fusion"] == "late" and checkpoint["cfg_version"] == "v3"

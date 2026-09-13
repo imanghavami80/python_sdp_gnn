@@ -1,8 +1,12 @@
-# CFG Extraction
+# 04 — CFG Extraction
 
 **Implementation:** `scripts/extract_promise_cfg.py`
 
 **Java backend:** `scripts/soot_cfg_extractor.java`
+
+The canonical extractor is CFG v3; there is no version or PDG selector.
+Each graph-index row and extraction summary records `cfg_version=v3`.
+The final evaluator rejects other versions and noncanonical relation vocabularies.
 
 ## Purpose
 

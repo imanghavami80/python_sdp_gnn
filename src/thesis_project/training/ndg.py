@@ -184,8 +184,11 @@ def standardize_ndg_structural_features(
     *other_graphs: ProjectGraph,
 ) -> tuple[ProjectGraph, ...]:
     """Standardize label-free NDG descriptors using training nodes only."""
-    if train_graph.ndg_structural_x is None:
-        if any(graph.ndg_structural_x is not None for graph in other_graphs):
+    if train_graph.ndg_structural_x is None or train_graph.ndg_structural_x.size(1) == 0:
+        if any(
+            graph.ndg_structural_x is not None and graph.ndg_structural_x.size(1) != 0
+            for graph in other_graphs
+        ):
             raise ValueError("NDG structural feature availability differs across graphs")
         return (train_graph, *other_graphs)
     if any(graph.ndg_structural_x is None for graph in other_graphs):

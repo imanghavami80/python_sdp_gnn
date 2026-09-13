@@ -1,4 +1,4 @@
-# AST Encoder
+# 09 — AST Encoder
 
 **Implementation:** `src/thesis_project/models/ast_encoder.py`
 
@@ -92,4 +92,3 @@ of which nodes influenced pooling more strongly.
 - Update extraction vocabularies, config validation, loaders, and tests together
   when changing the input contract.
 - Preserve one output embedding per file graph.
-

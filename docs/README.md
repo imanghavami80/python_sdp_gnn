@@ -1,56 +1,41 @@
-# Developer Documentation
+# 01 — Documentation Reading Map
 
-This directory explains the implementation file by file. Start with the root
-[`README.md`](../README.md) for installation and the shortest path to running
-the pipeline. Use this documentation when changing, reviewing, or extending a
-specific stage.
+Every maintained Markdown document has a two-digit reading number in its title.
+Filenames remain stable so links and IDE tabs continue to work. Read 00–13 for
+the core pipeline, 14–18 for diagnostics and evaluation guidance, and 19–21 for
+historical results.
 
-## Execution Order
+The current system always uses CFG v3 and late fusion. Its scenario controls are
+cluster mode (none/simple/gated) and NDG structural features (off/on).
+K-means++, GMM, and HDBSCAN remain algorithm settings within active clustering.
+Defaults are no clustering and no structural features.
 
-| Order | Stage | Implementation | Documentation |
-| --- | --- | --- | --- |
-| 1 | PROMISE preprocessing | `scripts/preprocess_promise.py` | [Preprocessing](pipeline/preprocess_promise.md) |
-| 2 | AST extraction | `scripts/extract_promise_ast.py` | [AST extraction](pipeline/extract_promise_ast.md) |
-| 3 | CFG extraction | `scripts/extract_promise_cfg.py` | [CFG extraction](pipeline/extract_promise_cfg.md) |
-| 3a | Soot backend | `scripts/soot_cfg_extractor.java` | [Soot backend](reference/soot_cfg_extractor.md) |
-| 4 | NDG extraction | `scripts/extract_promise_ndg.py` | [NDG extraction](pipeline/extract_promise_ndg.md) |
-| 4a | NDG structural features | `scripts/extract_ndg_structural_features.py` | [NDG structural features](features/ndg_structural_features.md) |
-| 5 | Final evaluation | `scripts/evaluate_ndg_nested_lopo.py` | [Nested LOPO](training/evaluate_ndg_nested_lopo.md) |
+| Read | Document |
+| --- | --- |
+| 00 | [Multi-View Software Defect Prediction](../README.md) |
+| 01 | [Documentation Reading Map](README.md) |
+| 02 | [PROMISE Preprocessing](pipeline/preprocess_promise.md) |
+| 03 | [AST Extraction](pipeline/extract_promise_ast.md) |
+| 04 | [CFG Extraction](pipeline/extract_promise_cfg.md) |
+| 05 | [Soot CFG Backend](reference/soot_cfg_extractor.md) |
+| 06 | [NDG Extraction](pipeline/extract_promise_ndg.md) |
+| 07 | [Handcrafted NDG Structural Features](features/ndg_structural_features.md) |
+| 08 | [Cluster-Based NDG Features](features/cluster_features.md) |
+| 09 | [AST Encoder](models/ast_encoder.md) |
+| 10 | [CFG Encoder](models/cfg_encoder.md) |
+| 11 | [NDG Encoder](models/ndg_encoder.md) |
+| 12 | [Shared NDG Training Utilities](training/ndg_training.md) |
+| 13 | [Strict Nested NDG LOPO Evaluation](training/evaluate_ndg_nested_lopo.md) |
+| 14 | [Exploratory Global AST Embeddings](training/generate_ast_embeddings.md) |
+| 15 | [Standalone AST LOPO Evaluation](training/evaluate_ast_lopo.md) |
+| 16 | [Standalone CFG LOPO Evaluation](training/evaluate_cfg_lopo.md) |
+| 17 | [Testing and Validation](reference/testing.md) |
+| 18 | [Model Improvement Strategy](reference/model_improvement.md) |
+| 19 | [Model Results and Historical Record](../MODEL_RESULTS.md) |
+| 20 | [Short Report: Improvements to the CFG View](reports/cfg_view_progress_report_short.md) |
+| 21 | [Progress Report: Development of the Behavioral Graph View](reports/cfg_view_progress_report.md) |
 
-## Models
-
-| Model | Implementation | Documentation |
-| --- | --- | --- |
-| AST GIN encoder | `src/thesis_project/models/ast_encoder.py` | [AST model](models/ast_encoder.md) |
-| Edge-aware CFG GAT | `src/thesis_project/models/cfg_encoder.py` | [CFG model](models/cfg_encoder.md) |
-| Multi-view relational NDG GAT | `src/thesis_project/models/ndg_encoder.py` | [NDG model](models/ndg_encoder.md) |
-| Handcrafted NDG structural view | `src/thesis_project/features/ndg_structural.py` | [NDG structural features](features/ndg_structural_features.md) |
-| Cluster-derived metric features | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
-
-## Supporting Training Workflows
-
-| Purpose | Implementation | Documentation |
-| --- | --- | --- |
-| Exploratory global AST embeddings | `scripts/generate_ast_embeddings.py` | [Global AST workflow](training/generate_ast_embeddings.md) |
-| Standalone AST LOPO | `scripts/evaluate_ast_lopo.py` | [AST LOPO](training/evaluate_ast_lopo.md) |
-| Legacy standalone behavioral LOPO | `scripts/evaluate_cfg_lopo.py` | [Behavioral LOPO](training/evaluate_cfg_lopo.md) |
-| Shared NDG operations | `src/thesis_project/training/ndg.py` | [NDG training utilities](training/ndg_training.md) |
-| Leakage-safe clustering | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
-| Automated verification | `tests/` | [Testing](reference/testing.md) |
-| Improvement strategy | Research/evaluation guidance | [Model improvement](reference/model_improvement.md) |
-| CFG-view progress report | Supervisor-facing experiment summary | [CFG-view report](reports/cfg_view_progress_report.md) |
-| Short CFG-view report | Concise supervisor summary | [Short CFG-view report](reports/cfg_view_progress_report_short.md) |
-
-## Data Granularity
-
-- PROMISE rows represent Java files/classes and contain one binary defect label.
-- AST and CFG encoders produce one graph embedding per file.
-- An NDG represents one complete project and each NDG node represents one file.
-- The final task is node classification: one probability and embedding per file.
-
-## Leakage Boundary
-
-`evaluate_ndg_nested_lopo.py` is the primary leakage-safe research evaluation. It trains
-AST, CFG, and NDG models inside every outer project fold. Outputs from the
-standalone AST and behavioral scripts are useful for diagnostics, but must not replace
-fold-specific embeddings in the final experiment.
+The generated `outputs/` directory was removed during cleanup. Rebuild data
+using document 00 before experiments. Historical reports retain earlier values;
+their raw artifacts are absent. All final models are retrained inside the
+project-held-out protocol; diagnostic embeddings must not be reused there.

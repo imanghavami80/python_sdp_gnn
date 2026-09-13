@@ -1,74 +1,44 @@
-# Model Improvement Strategy
+# 18 — Model Improvement Strategy
 
-## Implemented
+The active model always uses AST, CFG v3, relational NDG message passing, and
+late fusion. The supported scenario factors are cluster mode (none/simple/gated)
+and handcrafted NDG structural features (off/on).
 
-The final nested LOPO pipeline now addresses two high-impact CPDP problems:
+## Controlled evaluation
 
-1. **Project-size imbalance:** each outer-training project contributes equal
-   total NDG loss, while positive-class weighting still handles label imbalance.
-2. **Cross-project calibration shift:** each fold selects its classification
-   threshold only from the inner-validation project.
+Start with the baseline: neither clustering nor handcrafted NDG features.
+Then compare simple and gated clustering using the same clustering algorithm
+(default k-means++), feature construction, graph artifacts, and seeds. Repeat
+the three modes with NDG structural features enabled. These six scenarios
+separate cluster integration from topology-feature augmentation.
 
-Both changes preserve the outer-test boundary.
+Use macro-project PR-AUC and ROC-AUC for ranking, MCC/balanced accuracy/F1 for
+classification, and Brier score for probabilities. Report per-project scores
+and variation across seeds. Pooled metrics are secondary because project sizes
+and label distributions differ substantially.
 
-The proposal's late fusion and implementation's early fusion are both exposed
-through `--fusion-stage`, making the design choice a controlled ablation.
+The current inner-validation threshold is transferred to a freshly retrained
+model. This preserves the outer-test boundary but does not guarantee calibrated
+probabilities or a well-matched final threshold. Diagnose score distributions,
+predicted-positive rates, and calibration before attributing every metric change
+to a representation. Do not tune thresholds on test labels.
 
-Training-only k-means++, GMM, and HDBSCAN features are implemented for the proposal's
-second contribution. After direct concatenation reduced F1, clustering was
-moved into a separate gated branch and enriched with cross-fitted, smoothed
-defect risk. `--cluster-method` makes the geometry algorithm a controlled
-ablation; `--no-cluster-features` remains the baseline. The outer-test boundary
-is preserved for every variant.
+## Seeds and provenance
 
-## Evaluation Priority
-
-Use metrics in this order:
-
-1. Macro-project PR-AUC and ROC-AUC for ranking.
-2. Macro-project MCC, balanced accuracy, and F1 for classification.
-3. Brier score for probability calibration.
-4. Pooled metrics only as secondary results.
-
-Report mean, standard deviation, median, per-project values, and results over
-multiple random seeds.
-
-## Next Controlled Experiments
-
-Change one factor at a time:
-
-1. Metrics-only baseline.
-2. Metrics + AST.
-3. Metrics + CFG.
-4. Metrics + AST + CFG without NDG message passing.
-5. Full relational NDG model.
-6. Full late-fusion model with versus without cluster-derived metric features.
-7. Gated k-means++ versus gated GMM versus gated HDBSCAN with every
-   non-clustering setting fixed.
-
-This ablation establishes which view actually improves cross-project
-generalization. After that, prioritize extraction coverage and relation-quality
-improvements over adding unrelated feature families.
-
-## Multiple Seeds
-
-Use separate output directories:
+Run matched seeds for each scenario:
 
 ```bash
 for seed in 42 43 44 45 46; do
-  python scripts/evaluate_ndg_nested_lopo.py \
-    --seed "$seed" \
-    --output-dir "outputs/promise/final_ndg_seed_${seed}" \
-    --device cpu
+  python scripts/evaluate_ndg_nested_lopo.py --seed "$seed" --device cpu
 done
 ```
 
-Never select the best seed. Aggregate all seeds.
+Automatic output names include scenario and seed; nonempty directories are
+rejected. Never select the best seed. Compare manifest arguments, input hashes,
+CFG v3 markers, and completed fold counts before aggregating results.
 
-## Training Time Is Not a Quality Metric
+Historical reports document earlier decisions; they are not results from the
+cleaned architecture. New experiments are required after regenerating inputs.
 
-A 15-minute run is not evidence of under-training. Hardware, graph batching,
-and model size determine wall-clock time. Diagnose learning from training and
-validation curves, selected epochs, multiple-seed variance, and held-out
-metrics. Increase epochs or capacity only when those measurements show
-underfitting; longer training can otherwise overfit source projects.
+Training time alone does not indicate learning quality. Use selection histories,
+held-out results, and variance to decide whether more training is useful.

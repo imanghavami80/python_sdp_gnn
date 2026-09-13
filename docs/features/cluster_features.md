@@ -1,11 +1,11 @@
-# Cluster-Based NDG Features
+# 08 — Cluster-Based NDG Features
 
 **Implementation:** `src/thesis_project/training/clustering.py`
 
 ## Purpose
 
-The proposal requires cluster-derived features from the handcrafted PROMISE
-metrics. They form a separate gated branch for each NDG file node. AST and CFG
+Optional clustering derives features from the handcrafted PROMISE metrics.
+Use `--cluster-mode none|simple|gated`; none is the default. AST and CFG
 graphs are not clustered: they already have independent learned
 representations.
 
@@ -49,13 +49,25 @@ per cluster would change size between inner selection and final refitting. It
 instead produces a fixed six-value density representation: maximum soft
 membership, membership entropy, noise probability, approximate assignment
 strength, standardized GLOSH outlier score, and smoothed defect risk. This lets
-the same gated GNN architecture be selected and finally retrained even when the
+the same selected GNN architecture be selected and finally retrained even when the
 number of density clusters changes.
 
 This creates `2K + 2` values in `cluster_x` while retaining the 20 original
 metrics unchanged in `metrics_x`. The hard cluster ID, maximum soft-membership
-confidence, outlier value, risk, and learned gate are written to prediction
+confidence, outlier value, risk, and (for gated mode) learned gate are written to prediction
 CSVs for diagnostics.
+
+## Integration modes
+
+The three modes use fixed late fusion and CFG v3. In `none`, no clusterer is
+fitted. In `simple`, metrics and cluster features are directly concatenated
+inside the encoder before a joint projection. In `gated`, separate projections
+are combined through the residual gate below. Both active modes use the same
+feature vector, including cross-fitted defect risk, to isolate integration.
+The simple mode is not the historical five-feature clustering implementation.
+
+Handcrafted NDG structural features can independently be enabled with any mode.
+They enter after NDG message passing and do not alter cluster fitting.
 
 ## Separate Gated Branch
 
@@ -156,66 +168,23 @@ normalization, soft-membership scales, or defect risk.
 - A single hard k-means label discards similarity to the other clusters and is
   an arbitrary categorical code.
 
-The density-based alternatives can be studied later, but do not provide the
-same fixed, stable component space for unseen projects.
-
 ## Run and Ablation
 
-Cluster features are retained for historical ablations but are disabled by
-default. They cannot be enabled together with the replacement NDG structural
-branch. For the proposal's late-fusion model:
-
 ```bash
-python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
-  --cluster-features \
-  --no-ndg-structural-features \
-  --cluster-method kmeans \
-  --output-dir outputs/promise/nested_lopo_late_cluster_gate_kmeans \
-  --device cpu
+python scripts/evaluate_ndg_nested_lopo.py --cluster-mode none --device cpu
+python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --device cpu
+python scripts/evaluate_ndg_nested_lopo.py --cluster-mode gated --device cpu
 ```
 
-Run the controlled GMM alternative separately:
-
-```bash
-python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
-  --cluster-features \
-  --no-ndg-structural-features \
-  --cluster-method gmm \
-  --output-dir outputs/promise/nested_lopo_late_cluster_gate_gmm \
-  --device cpu
-```
-
-Run the density-based HDBSCAN alternative separately:
-
-```bash
-python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
-  --cluster-features \
-  --no-ndg-structural-features \
-  --cluster-method hdbscan \
-  --output-dir outputs/promise/nested_lopo_late_cluster_gate_hdbscan \
-  --device cpu
-```
-
-Compare it with the same architecture and seed without cluster features:
-
-```bash
-python scripts/evaluate_ndg_nested_lopo.py \
-  --fusion-stage late \
-  --no-cluster-features \
-  --no-ndg-structural-features \
-  --output-dir outputs/promise/nested_lopo_late \
-  --device cpu
-```
-
-Do not claim an improvement until this paired ablation is complete across all
-projects and preferably multiple seeds.
+Add `--ndg-structural-features` to any command after extracting the structural
+features. K-means++ is the default; `--cluster-method gmm` and
+`--cluster-method hdbscan` remain available for either active mode.
+Automatic output directories include mode, algorithm, structural on/off, and
+seed. Nonempty experiment directories are rejected.
 
 ## Saved Evidence
 
-Each fold writes `cluster_features.json`, containing the method, candidate
+Each fold with clustering enabled writes `cluster_features.json`, containing the method, candidate
 silhouette, BIC, or relative-DBCV scores, selected parameter, fitted parameters, normalization values,
 smoothed defect rates, and feature names. `fold_metrics.csv` records the selected
 count, branch dimension, and test gate statistics. The overall summary records

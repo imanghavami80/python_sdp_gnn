@@ -1,4 +1,4 @@
-# Standalone AST LOPO Evaluation
+# 15 — Standalone AST LOPO Evaluation
 
 **Implementation:** `scripts/evaluate_ast_lopo.py`
 
@@ -62,4 +62,3 @@ outputs/promise/embeddings/ast_lopo/folds/<project>/ast_encoder.pt
 - It is not the final multi-view node classifier.
 - Fitted outputs from this workflow must not be reused as if they were nested
   inside final NDG model selection.
-

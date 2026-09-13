@@ -1,4 +1,4 @@
-# Testing and Validation
+# 17 — Testing and Validation
 
 ## Purpose
 
@@ -43,7 +43,7 @@ binary release.
 
 ### `tests/test_ndg_encoder.py`
 
-Checks multi-view masking, early/late fusion behavior, node-level output shape, reverse relations, outer
+Checks multi-view masking, fixed late-fusion behavior and all six feature scenarios, node-level output shape, reverse relations, outer
 project leakage guards, validation-project suitability, and training-only metric
 transformation.
 
@@ -77,7 +77,7 @@ After changing model or training code:
    training set.
 5. Confirm each fold records a validation-selected decision threshold.
 6. Confirm combined training projects have equal total `loss_weight`.
-7. Confirm each fold's `cluster_features.json` was fitted without the outer test project.
+7. When clustering is enabled, confirm each fold's `cluster_features.json` was fitted without the outer test project.
 
 ## Expected Warnings
 
@@ -85,3 +85,9 @@ Recent Python versions may produce PyTorch Geometric deprecation warnings from
 type inspection. Warnings are not test failures, but dependency compatibility
 should be reviewed before upgrading to a Python version where the deprecated
 behavior is removed.
+
+Tests also verify rejection of old CFG versions/relations, removed fusion flags,
+nonempty output protection, and disabled structural tensors after graph merging.
+Small integration tests exercise feature fitting, selection, final retraining,
+and saved predictions/checkpoints for all six scenarios, using fixed upstream
+embeddings to avoid requiring the Java corpus in the test suite.

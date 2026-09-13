@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import shutil
+import hashlib
 import sys
 import time
 from dataclasses import asdict, dataclass, replace
@@ -29,6 +29,7 @@ try:
     from torch import Tensor, nn
 
     import evaluate_cfg_lopo as cfg_pipeline
+    from extract_promise_cfg import EDGE_TYPE_TO_ID as CFG_EDGE_TYPE_TO_ID
     import generate_ast_embeddings as ast_pipeline
     from thesis_project.training import (
         ClusterFeatureConfig,
@@ -67,7 +68,7 @@ class BaseNDGProject:
     ndg_structural_x: np.ndarray
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run strict nested AST + CFG + NDG LOPO node classification.")
     parser.add_argument("--ndg-index", type=Path, default=Path("outputs/promise/ndg/graph_index.csv"))
     parser.add_argument("--ndg-edge-vocab", type=Path, default=Path("outputs/promise/ndg/edge_type_vocab.json"))
@@ -90,7 +91,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cfg-invoke-vocab", type=Path, default=Path("outputs/promise/cfg/invoke_kind_vocab.json"))
     parser.add_argument("--cfg-edge-vocab", type=Path, default=Path("outputs/promise/cfg/edge_type_vocab.json"))
     parser.add_argument("--cfg-feature-names", type=Path, default=Path("outputs/promise/cfg/feature_names.json"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/final_ndg_nested_lopo"))
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="Default: outputs/promise/experiments/<scenario>/seed_<seed>. Must be empty.")
     parser.add_argument("--upstream-epochs", type=int, default=50)
     parser.add_argument("--ndg-epochs", type=int, default=100)
     parser.add_argument("--patience", type=int, default=10)
@@ -109,21 +111,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--attention-dropout", type=float, default=0.15)
     parser.add_argument(
-        "--fusion-stage",
-        choices=["early", "late"],
-        default="early",
-        help="Fuse AST/CFG before NDG propagation or after independent NDG encoding (proposal).",
-    )
-    parser.add_argument(
-        "--cluster-features",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Use the legacy pre-NDG clustering branch for historical ablations.",
+        "--cluster-mode",
+        choices=["none", "simple", "gated"],
+        default="none",
+        help="No clustering, direct metric/cluster concatenation, or gated cluster residual.",
     )
     parser.add_argument(
         "--ndg-structural-features",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Use label-free handcrafted NDG topology descriptors after message passing.",
     )
     parser.add_argument(
@@ -188,7 +184,21 @@ def parse_args() -> argparse.Namespace:
         help="Use coarse fallback ASTs. By default they are masked as an unavailable AST view.",
     )
     parser.add_argument("--test-project", action="append", default=[], help="Run only selected outer test projects.")
-    return parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def scenario_name(args: argparse.Namespace) -> str:
+    cluster = "none" if args.cluster_mode == "none" else f"{args.cluster_mode}_{args.cluster_method}"
+    structural = "on" if args.ndg_structural_features else "off"
+    return f"cluster_{cluster}__ndg_structural_{structural}"
+
+
+def validate_cfg_inputs(index_path: Path, edge_vocab: dict[str, int]) -> None:
+    index = pd.read_csv(index_path)
+    if (index.empty or "cfg_version" not in index
+            or not index["cfg_version"].eq("v3").all()
+            or edge_vocab != CFG_EDGE_TYPE_TO_ID):
+        raise ValueError("Only canonical CFG v3 inputs are supported. Run scripts/extract_promise_cfg.py.")
 
 
 def resolve_path(path: Path) -> Path:
@@ -796,7 +806,7 @@ def run_outer_fold(
     selected_cluster_count: int | None = None
     selected_hdbscan_min_cluster_size: int | None = None
     final_cluster_count: int | None = None
-    if args.cluster_features:
+    if (args.cluster_mode != "none"):
         fit_groups = np.concatenate(
             [np.full(selection_graphs[project].num_nodes, project) for project in fit_projects]
         )
@@ -834,7 +844,7 @@ def run_outer_fold(
                 flush=True,
             )
     cluster_dim = 0 if fit_graph.cluster_x is None else int(fit_graph.cluster_x.size(1))
-    fold_ndg_config = replace(ndg_config, cluster_dim=cluster_dim)
+    fold_ndg_config = replace(ndg_config, cluster_dim=cluster_dim, cluster_mode=args.cluster_mode)
     set_seed(args.seed + 2000 + fold_index)
     stage_started = time.perf_counter()
     print(f"fold={test_project} stage=ndg_selection status=started", flush=True)
@@ -867,7 +877,7 @@ def run_outer_fold(
     test_cluster_confidence = np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
     test_cluster_outlier_distance = np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
     test_cluster_defect_risk = np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
-    if args.cluster_features:
+    if (args.cluster_mode != "none"):
         if selected_cluster_count is None or cluster_metadata is None:
             raise AssertionError("Cluster selection metadata is missing")
         full_train_groups = np.concatenate(
@@ -919,7 +929,7 @@ def run_outer_fold(
     attention_diagnostics = evaluate_attention(final_ndg, device_test_graph)
     test_cluster_gate = (
         attention_diagnostics["cluster_gate"].reshape(-1).astype(np.float32)
-        if args.cluster_features
+        if args.cluster_mode == "gated"
         else np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
     )
     test_ndg_structural_gate = (
@@ -990,6 +1000,9 @@ def run_outer_fold(
             "decision_threshold": decision_threshold,
             "protocol": "strict_nested_LOPO",
             "cluster_features": cluster_metadata,
+            "scenario": scenario_name(args),
+            "fusion": "late",
+            "cfg_version": "v3",
             "ndg_structural_feature_names": ndg_structural_feature_names,
         },
         fold_dir / "ndg_encoder.pt",
@@ -998,6 +1011,8 @@ def run_outer_fold(
     predictions = pd.DataFrame(
         {
             "dataset_name": test_project,
+            "scenario": scenario_name(args),
+            "cluster_mode": args.cluster_mode,
             "name": test_graph.names,
             "source_path": test_graph.source_paths,
             "label": labels,
@@ -1028,11 +1043,13 @@ def run_outer_fold(
         "decision_threshold": decision_threshold,
         "cluster_count": selected_cluster_count,
         "final_cluster_count": final_cluster_count,
-        "cluster_method": args.cluster_method if args.cluster_features else None,
+        "cluster_method": args.cluster_method if (args.cluster_mode != "none") else None,
+        "cluster_mode": args.cluster_mode,
+        "scenario": scenario_name(args),
         "hdbscan_min_cluster_size": selected_hdbscan_min_cluster_size,
         "cluster_feature_dim": cluster_dim,
-        "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_features else None,
-        "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_features else None,
+        "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_mode == "gated" else None,
+        "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_mode == "gated" else None,
         "ndg_structural_feature_dim": fold_ndg_config.ndg_structural_dim,
         "ndg_structural_gate_mean": (
             float(np.nanmean(test_ndg_structural_gate))
@@ -1088,12 +1105,9 @@ def aggregate_fold_metrics(fold_metrics: pd.DataFrame, prefix: str) -> dict[str,
 
 
 def prepare_output_dir(output_dir: Path) -> None:
-    """Clean a specific experiment directory while refusing broad targets."""
-    forbidden = {Path(output_dir.anchor), Path.home().resolve(), REPO_ROOT.resolve()}
-    if output_dir.resolve() in forbidden:
-        raise ValueError(f"Refusing to clean unsafe output directory: {output_dir}")
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    """Never silently replace another scenario's results."""
+    if output_dir.exists() and (not output_dir.is_dir() or any(output_dir.iterdir())):
+        raise FileExistsError(f"Output directory is not empty: {output_dir}. Choose a new directory.")
     output_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -1101,19 +1115,15 @@ def main() -> None:
     args = parse_args()
     if min(args.upstream_epochs, args.ndg_epochs, args.patience, args.ast_batch_size, args.cfg_batch_size) <= 0:
         raise ValueError("Epoch, patience, and batch-size arguments must be positive")
-    if args.cluster_features and args.ndg_structural_features:
-        raise ValueError(
-            "The NDG structural branch replaces the legacy cluster branch; "
-            "disable one of them for a controlled experiment"
-        )
-    if args.cluster_features:
+    if (args.cluster_mode != "none"):
         cluster_args(args, args.seed)
         if args.cluster_method == "hdbscan" and args.cluster_count is not None:
             raise ValueError("--cluster-count is not available with --cluster-method hdbscan")
     elif args.cluster_count is not None:
-        raise ValueError("--cluster-count requires --cluster-features")
-    output_dir = resolve_path(args.output_dir)
-    prepare_output_dir(output_dir)
+        raise ValueError("--cluster-count requires --cluster-mode simple or gated")
+    output_dir = resolve_path(args.output_dir or (
+        Path("outputs/promise/experiments") / scenario_name(args) / f"seed_{args.seed}"
+    ))
     device = choose_device(args.device)
 
     ndg_edge_vocab = {str(key): int(value) for key, value in load_json(resolve_path(args.ndg_edge_vocab)).items()}
@@ -1137,6 +1147,8 @@ def main() -> None:
             f"NDG structural index contains unknown projects: {extra_structural_projects}"
         )
     selected_test_projects = args.test_project or all_projects
+    if len(set(selected_test_projects)) != len(selected_test_projects):
+        raise ValueError("Duplicate --test-project values would duplicate predictions")
     unknown = sorted(set(selected_test_projects) - set(all_projects))
     if unknown:
         raise ValueError(f"Unknown test projects: {unknown}")
@@ -1154,13 +1166,7 @@ def main() -> None:
         resolve_path(args.cfg_edge_vocab),
         resolve_path(args.cfg_feature_names),
     )
-    required_cfg_relations = {"CFG_ENTRY", "CFG_FALLTHROUGH", "CFG_BRANCH_TRUE", "CFG_EXCEPTION_HANDLER"}
-    missing_cfg_relations = sorted(required_cfg_relations - set(cfg_edge_vocab))
-    if missing_cfg_relations:
-        raise ValueError(
-            f"CFG edge vocabulary is missing required relations: {missing_cfg_relations}. "
-            "Run scripts/extract_promise_cfg.py first."
-        )
+    validate_cfg_inputs(resolve_path(args.cfg_index), cfg_edge_vocab)
     if set(all_projects) != set(ast_index_all["dataset_name"].astype(str).unique()):
         raise ValueError("AST and NDG project sets differ")
     missing_ast_projects = sorted(set(all_projects) - set(ast_index["dataset_name"].astype(str).unique()))
@@ -1182,8 +1188,24 @@ def main() -> None:
         heads=args.heads,
         dropout=args.dropout,
         attention_dropout=args.attention_dropout,
-        fusion_stage=args.fusion_stage,
     )
+    prepare_output_dir(output_dir)
+    input_paths = [args.ast_index, args.cfg_index, args.ndg_index, args.cfg_edge_vocab]
+    if args.ndg_structural_features:
+        input_paths += [args.ndg_structural_index, args.ndg_structural_feature_names]
+    manifest = {
+        "scenario": scenario_name(args),
+        "fusion": "late",
+        "behavioral_view": "CFG",
+        "cfg_version": "v3",
+        "cluster_mode": args.cluster_mode,
+        "ndg_structural_features": args.ndg_structural_features,
+        "arguments": {key: str(value) if isinstance(value, Path) else value
+                      for key, value in vars(args).items()},
+        "input_sha256": {str(resolve_path(path)): hashlib.sha256(resolve_path(path).read_bytes()).hexdigest()
+                         for path in input_paths},
+    }
+    (output_dir / "run_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     print(
         f"Strict nested LOPO started: outer_folds={len(selected_test_projects)} projects={len(all_projects)} "
         f"nodes={sum(len(project.names) for project in base_ndgs.values())} device={device} "
@@ -1238,6 +1260,10 @@ def main() -> None:
     summary = {
         "protocol": "strict_nested_LOPO",
         "behavioral_view": "CFG",
+        "cfg_version": "v3",
+        "fusion": "late",
+        "scenario": scenario_name(args),
+        "cluster_mode": args.cluster_mode,
         "prediction_granularity": "file_node",
         "outer_test_projects": selected_test_projects,
         "all_projects": all_projects,
@@ -1262,46 +1288,52 @@ def main() -> None:
         ),
         "model_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "model"),
         "baseline_macro_project_metrics": aggregate_fold_metrics(fold_metrics, "baseline"),
-        "ndg_encoder_config_template": asdict(ndg_config),
+        "ndg_encoder_configs_by_fold": {
+            str(row["test_project"]): asdict(replace(
+                ndg_config, cluster_mode=args.cluster_mode,
+                cluster_dim=int(row["cluster_feature_dim"]),
+            )) for row in fold_rows
+        },
         "cfg_encoder": {
             "architecture": "single edge-aware GATv2 encoder over typed exceptional control flow",
             "edge_types": cfg_edge_vocab,
         },
         "cluster_features": {
-            "enabled": args.cluster_features,
+            "enabled": (args.cluster_mode != "none"),
+            "mode": args.cluster_mode,
             "algorithm": (
                 {
                     "kmeans": "k-means++",
                     "gmm": "gaussian-mixture",
                     "hdbscan": "hdbscan",
                 }[args.cluster_method]
-                if args.cluster_features
+                if (args.cluster_mode != "none")
                 else None
             ),
             "input": "training-fold standardized handcrafted metrics",
             "uses_defect_labels_for_cluster_geometry": False,
             "defect_labels_used_for": (
-                "cross-fitted smoothed cluster risk only" if args.cluster_features else None
+                "cross-fitted smoothed cluster risk only" if (args.cluster_mode != "none") else None
             ),
-            "risk_smoothing": args.cluster_risk_smoothing if args.cluster_features else None,
+            "risk_smoothing": args.cluster_risk_smoothing if (args.cluster_mode != "none") else None,
             "training_project_weighting": (
-                "equal total weight per project" if args.cluster_features else None
+                "equal total weight per project" if (args.cluster_mode != "none") else None
             ),
             "resampled_project_balancing": (
                 "deterministic equal-project resampling"
-                if args.cluster_features and args.cluster_method == "gmm"
+                if (args.cluster_mode != "none") and args.cluster_method == "gmm"
                 else None
             ),
             "hdbscan_geometry_training": (
                 "unique training nodes; risk remains project-weighted"
-                if args.cluster_features and args.cluster_method == "hdbscan"
+                if (args.cluster_mode != "none") and args.cluster_method == "hdbscan"
                 else None
             ),
             "fixed_cluster_count": args.cluster_count,
             "candidate_range": (
                 list(args.hdbscan_min_cluster_sizes)
-                if args.cluster_features and args.cluster_method == "hdbscan"
-                else [args.cluster_min, args.cluster_max] if args.cluster_features else None
+                if (args.cluster_mode != "none") and args.cluster_method == "hdbscan"
+                else [args.cluster_min, args.cluster_max] if (args.cluster_mode != "none") else None
             ),
             "selection_criterion": (
                 "maximum silhouette score"
@@ -1309,30 +1341,30 @@ def main() -> None:
                 else "minimum BIC"
                 if args.cluster_method == "gmm"
                 else "maximum relative DBCV"
-            ) if args.cluster_features else None,
+            ) if (args.cluster_mode != "none") else None,
             "gmm_covariance_type": (
                 args.gmm_covariance_type
-                if args.cluster_features and args.cluster_method == "gmm"
+                if (args.cluster_mode != "none") and args.cluster_method == "gmm"
                 else None
             ),
             "gmm_reg_covar": (
                 args.gmm_reg_covar
-                if args.cluster_features and args.cluster_method == "gmm"
+                if (args.cluster_mode != "none") and args.cluster_method == "gmm"
                 else None
             ),
             "gmm_n_init": (
                 args.gmm_n_init
-                if args.cluster_features and args.cluster_method == "gmm"
+                if (args.cluster_mode != "none") and args.cluster_method == "gmm"
                 else None
             ),
             "hdbscan_min_cluster_sizes": (
                 args.hdbscan_min_cluster_sizes
-                if args.cluster_features and args.cluster_method == "hdbscan"
+                if (args.cluster_mode != "none") and args.cluster_method == "hdbscan"
                 else None
             ),
             "hdbscan_min_samples": (
                 args.hdbscan_min_samples
-                if args.cluster_features and args.cluster_method == "hdbscan"
+                if (args.cluster_mode != "none") and args.cluster_method == "hdbscan"
                 else None
             ),
             "selected_counts_by_fold": {
@@ -1366,9 +1398,9 @@ def main() -> None:
         "ast_fallback_policy": "included" if args.include_ast_fallbacks else "masked_as_missing_view",
         "ast_fallback_graphs": ast_fallback_count,
         "metric_transform": (
-            "training-fold median imputation and standard scaling; a separate gated cluster branch "
+            f"training-fold median imputation and standard scaling; {args.cluster_mode} cluster integration "
             "uses cluster distances, soft memberships, outlier distance, and cross-fitted defect risk"
-            if args.cluster_features
+            if (args.cluster_mode != "none")
             else "training-fold median imputation followed by training-fold standard scaling"
         ),
         "random_seed": args.seed,

@@ -1,4 +1,4 @@
-# Strict Nested NDG LOPO Evaluation
+# 13 — Strict Nested NDG LOPO Evaluation
 
 **Implementation:** `scripts/evaluate_ndg_nested_lopo.py`
 
@@ -10,8 +10,9 @@ defect probability and final contextual embedding per held-out file node.
 
 Precomputed global or standalone LOPO embeddings are not consumed.
 
-`--fusion-stage early|late` turns the implementation and proposal designs into
-a controlled ablation while preserving every split and leakage boundary.
+Late fusion and CFG v3 are fixed. Choose `--cluster-mode none|simple|gated`
+(default none), and independently enable `--ndg-structural-features` (default
+off). See [00 — README](../../README.md) for all six scenario commands.
 
 ## Inputs
 
@@ -21,9 +22,12 @@ The script requires completed AST, CFG, and NDG extraction:
 outputs/promise/ast/graph_index.csv
 outputs/promise/cfg/graph_index.csv
 outputs/promise/ndg/graph_index.csv
-outputs/promise/ndg_structural/feature_index.csv
 their tensor directories and vocabulary JSON files
 ```
+
+Structural index and feature names are additionally required only when that
+branch is enabled. CFG indexes must carry `cfg_version=v3` and use exactly the
+canonical control-flow vocabulary. Older inputs are rejected.
 
 Keys are joined by `(dataset_name, class name)`. Missing reliable AST or CFG
 views are represented through a mask, not by deleting the NDG node.
@@ -39,12 +43,13 @@ For each test project:
 5. Choose upstream epochs from the inner validation project.
 6. Retrain fresh AST and CFG models on all outer-training projects.
 7. Generate embeddings for outer-training files and the untouched test project.
-8. Standardize the label-free NDG structural descriptors from inner-fit nodes
-   and transform the inner-validation project without refitting.
+8. Fit metric scaling, optional clustering and risk, and optional structural
+   scaling on inner-fit nodes; transform inner validation without refitting.
 9. Train and select the NDG model, including its structural gate, using the
    same inner project boundary.
 10. Select the F1 decision threshold on that inner-validation project.
-11. Refit metric and structural scaling on all outer-training nodes.
+11. Refit transformations and any selected clusterer on all outer-training nodes;
+    cross-fit cluster risk by training project.
 12. Retrain a fresh NDG on all outer-training projects with equal total loss
     contribution from every project.
 13. Transform, predict, and encode every file node in the outer test project.
@@ -67,7 +72,9 @@ The outer test project is excluded from:
 - Decision-threshold selection.
 
 The threshold is selected independently inside every outer fold. The outer test
-project never influences it.
+project never influences it. A threshold from the selected inner model is
+transferred to a freshly retrained final model; probability-scale mismatch is
+still possible. This cleanup does not change or solve that calibration issue.
 
 ## Missing-View Policy
 
@@ -103,15 +110,20 @@ Main controls:
 --ast-batch-size --cfg-batch-size --lr --weight-decay
 --hidden-dim --embedding-dim --ast-layers --cfg-layers
 --ndg-layers --heads --dropout --attention-dropout
---fusion-stage --ndg-structural-features --cluster-features --cluster-method --cluster-count
+--ndg-structural-features --cluster-mode --cluster-method --cluster-count
 --cluster-min --cluster-max --cluster-silhouette-sample-size --cluster-n-init
 --gmm-n-init --gmm-covariance-type --gmm-reg-covar
 --hdbscan-min-cluster-sizes --hdbscan-min-samples --cluster-risk-smoothing
 --seed --device --test-project
 ```
 
-The output directory is cleaned at startup. Safety checks reject broad targets
-such as the repository root, filesystem root, or home directory.
+The default output is
+`outputs/promise/experiments/<scenario>/seed_<seed>/`, where the scenario
+includes cluster mode, active algorithm, and structural-feature on/off.
+Nonempty output directories are rejected. Use `--output-dir` to separate pilots
+or different hyperparameters with the same scenario and seed. The manifest
+records arguments and input-index hashes; summaries and checkpoints identify
+the mode, fixed fusion, and CFG version.
 
 ## Runtime and Progress
 
@@ -134,14 +146,14 @@ On macOS:
 
 ## Outputs
 
-Combined outputs:
+Combined outputs include `run_manifest.json` plus:
 
 ```text
-outputs/promise/final_ndg_nested_lopo/ndg_node_embeddings.npy
-outputs/promise/final_ndg_nested_lopo/ndg_node_embedding_index.csv
-outputs/promise/final_ndg_nested_lopo/all_test_node_predictions.csv
-outputs/promise/final_ndg_nested_lopo/fold_metrics.csv
-outputs/promise/final_ndg_nested_lopo/nested_lopo_summary.json
+outputs/promise/experiments/<scenario>/seed_<seed>/ndg_node_embeddings.npy
+outputs/promise/experiments/<scenario>/seed_<seed>/ndg_node_embedding_index.csv
+outputs/promise/experiments/<scenario>/seed_<seed>/all_test_node_predictions.csv
+outputs/promise/experiments/<scenario>/seed_<seed>/fold_metrics.csv
+outputs/promise/experiments/<scenario>/seed_<seed>/nested_lopo_summary.json
 ```
 
 Per-fold outputs:
@@ -157,6 +169,10 @@ folds/<test-project>/ndg_selection_history.csv
 folds/<test-project>/test_node_embeddings.npy
 folds/<test-project>/test_node_predictions.csv
 ```
+
+Enabled clustering additionally writes `folds/<project>/cluster_features.json`.
+CSV gate diagnostics are missing for absent gates (including the cluster gate
+in simple mode). No learned cluster-gate effect is implied in simple mode.
 
 ## Metrics
 
