@@ -21,17 +21,23 @@ from thesis_project.training import (
     binary_metrics,
     combine_graphs,
     select_f1_threshold,
+    standardize_ndg_structural_features,
     standardize_metrics,
 )
 
 
-def make_config(fusion_stage: str = "early", cluster_dim: int = 0) -> NDGEncoderConfig:
+def make_config(
+    fusion_stage: str = "early",
+    cluster_dim: int = 0,
+    ndg_structural_dim: int = 0,
+) -> NDGEncoderConfig:
     return NDGEncoderConfig(
         metrics_dim=20,
         ast_dim=16,
         cfg_dim=16,
         num_edge_types=14,
         cluster_dim=cluster_dim,
+        ndg_structural_dim=ndg_structural_dim,
         hidden_dim=32,
         output_dim=24,
         edge_type_embedding_dim=8,
@@ -47,6 +53,7 @@ def graph_inputs() -> dict[str, torch.Tensor]:
     return {
         "metrics_x": torch.randn(5, 20),
         "cluster_x": torch.empty(5, 0),
+        "ndg_structural_x": torch.empty(5, 0),
         "ast_x": torch.randn(5, 16),
         "cfg_x": torch.randn(5, 16),
         "view_mask": torch.tensor(
@@ -100,6 +107,22 @@ def test_cluster_features_use_a_separate_bounded_gate() -> None:
     assert attention["cluster_gate"].shape == (5, 1)
     assert torch.all(attention["cluster_gate"] >= 0.0)
     assert torch.all(attention["cluster_gate"] <= 1.0)
+
+
+def test_ndg_structural_features_use_a_separate_bounded_gate() -> None:
+    encoder = NDGMultiViewRelationalGATEncoder(
+        make_config("late", ndg_structural_dim=6)
+    )
+    encoder.eval()
+    inputs = graph_inputs()
+    inputs["ndg_structural_x"] = torch.randn(5, 6)
+
+    embeddings, attention = encoder(**inputs, return_attention=True)
+
+    assert embeddings.shape == (5, 24)
+    assert attention["ndg_structural_gate"].shape == (5, 1)
+    assert torch.all(attention["ndg_structural_gate"] >= 0.0)
+    assert torch.all(attention["ndg_structural_gate"] <= 1.0)
 
 
 def test_metrics_view_is_required() -> None:
@@ -157,6 +180,34 @@ def test_metric_transform_is_fit_on_training_nodes_only() -> None:
     assert torch.isfinite(train.metrics_x).all()
     assert torch.allclose(train.metrics_x.mean(dim=0), torch.zeros(1), atol=1e-6)
     assert test.metrics_x.item() > 50.0
+
+
+def test_ndg_structural_transform_is_fit_on_training_nodes_only() -> None:
+    def graph(values: list[list[float]]) -> ProjectGraph:
+        count = len(values)
+        return ProjectGraph(
+            dataset_name="sample",
+            names=[str(i) for i in range(count)],
+            source_paths=[str(i) for i in range(count)],
+            metrics_x=torch.zeros(count, 1),
+            ast_x=torch.zeros(count, 1),
+            cfg_x=torch.zeros(count, 1),
+            view_mask=torch.ones(count, 3, dtype=torch.bool),
+            loss_weight=torch.ones(count),
+            y=torch.zeros(count),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_type=torch.zeros(0, dtype=torch.long),
+            ndg_structural_x=torch.tensor(values),
+        )
+
+    train, test = standardize_ndg_structural_features(
+        graph([[1.0], [3.0]]), graph([[100.0]])
+    )
+
+    assert train.ndg_structural_x is not None
+    assert test.ndg_structural_x is not None
+    assert torch.allclose(train.ndg_structural_x.mean(dim=0), torch.zeros(1), atol=1e-6)
+    assert test.ndg_structural_x.item() > 50.0
 
 
 def test_combined_projects_have_equal_total_loss_weight() -> None:

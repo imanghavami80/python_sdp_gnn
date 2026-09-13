@@ -161,12 +161,15 @@ same fixed, stable component space for unseen projects.
 
 ## Run and Ablation
 
-Cluster features are enabled by default. For the proposal's late-fusion model:
+Cluster features are retained for historical ablations but are disabled by
+default. They cannot be enabled together with the replacement NDG structural
+branch. For the proposal's late-fusion model:
 
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py \
   --fusion-stage late \
   --cluster-features \
+  --no-ndg-structural-features \
   --cluster-method kmeans \
   --output-dir outputs/promise/nested_lopo_late_cluster_gate_kmeans \
   --device cpu
@@ -178,6 +181,7 @@ Run the controlled GMM alternative separately:
 python scripts/evaluate_ndg_nested_lopo.py \
   --fusion-stage late \
   --cluster-features \
+  --no-ndg-structural-features \
   --cluster-method gmm \
   --output-dir outputs/promise/nested_lopo_late_cluster_gate_gmm \
   --device cpu
@@ -189,6 +193,7 @@ Run the density-based HDBSCAN alternative separately:
 python scripts/evaluate_ndg_nested_lopo.py \
   --fusion-stage late \
   --cluster-features \
+  --no-ndg-structural-features \
   --cluster-method hdbscan \
   --output-dir outputs/promise/nested_lopo_late_cluster_gate_hdbscan \
   --device cpu
@@ -200,6 +205,7 @@ Compare it with the same architecture and seed without cluster features:
 python scripts/evaluate_ndg_nested_lopo.py \
   --fusion-stage late \
   --no-cluster-features \
+  --no-ndg-structural-features \
   --output-dir outputs/promise/nested_lopo_late \
   --device cpu
 ```

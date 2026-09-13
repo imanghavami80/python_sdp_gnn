@@ -15,6 +15,7 @@ from thesis_project.models.cfg_encoder import (
 )
 from thesis_project.models.ndg_encoder import (
     GatedClusterMetricEncoder,
+    GatedNDGStructuralAugmentation,
     GatedMultiViewFusion,
     NDGEncoderConfig,
     NDGMultiViewRelationalGATEncoder,
@@ -30,6 +31,7 @@ __all__ = [
     "CFGGraphClassifier",
     "GatedMultiViewFusion",
     "GatedClusterMetricEncoder",
+    "GatedNDGStructuralAugmentation",
     "NDGEncoderConfig",
     "NDGMultiViewRelationalGATEncoder",
     "NDGNodeClassifier",

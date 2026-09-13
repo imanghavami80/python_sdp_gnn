@@ -16,6 +16,7 @@ from thesis_project.training.ndg import (
     make_model,
     retrain,
     select_f1_threshold,
+    standardize_ndg_structural_features,
     standardize_metrics,
     train_with_validation,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "make_model",
     "retrain",
     "select_f1_threshold",
+    "standardize_ndg_structural_features",
     "standardize_metrics",
     "train_with_validation",
 ]

@@ -42,6 +42,7 @@ try:
         fit_cluster_features,
         make_model,
         retrain,
+        standardize_ndg_structural_features,
         standardize_metrics,
         train_with_validation,
     )
@@ -63,6 +64,7 @@ class BaseNDGProject:
     y: np.ndarray
     edge_index: np.ndarray
     edge_type: np.ndarray
+    ndg_structural_x: np.ndarray
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,6 +72,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ndg-index", type=Path, default=Path("outputs/promise/ndg/graph_index.csv"))
     parser.add_argument("--ndg-edge-vocab", type=Path, default=Path("outputs/promise/ndg/edge_type_vocab.json"))
     parser.add_argument("--ndg-feature-names", type=Path, default=Path("outputs/promise/ndg/feature_names.json"))
+    parser.add_argument(
+        "--ndg-structural-index",
+        type=Path,
+        default=Path("outputs/promise/ndg_structural/feature_index.csv"),
+    )
+    parser.add_argument(
+        "--ndg-structural-feature-names",
+        type=Path,
+        default=Path("outputs/promise/ndg_structural/feature_names.json"),
+    )
     parser.add_argument("--ast-index", type=Path, default=Path("outputs/promise/ast/graph_index.csv"))
     parser.add_argument("--ast-node-vocab", type=Path, default=Path("outputs/promise/ast/node_type_vocab.json"))
     parser.add_argument("--cfg-index", type=Path, default=Path("outputs/promise/cfg/graph_index.csv"))
@@ -105,8 +117,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cluster-features",
         action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the legacy pre-NDG clustering branch for historical ablations.",
+    )
+    parser.add_argument(
+        "--ndg-structural-features",
+        action=argparse.BooleanOptionalAction,
         default=True,
-        help="Use a gated, training-only cluster geometry and defect-risk branch.",
+        help="Use label-free handcrafted NDG topology descriptors after message passing.",
     )
     parser.add_argument(
         "--cluster-method",
@@ -579,7 +597,38 @@ def train_cfg_fold(
     return selection_lookup, final_lookup, final_model, config, metadata
 
 
-def load_base_ndgs(index_path: Path, num_forward_relations: int) -> dict[str, BaseNDGProject]:
+def load_ndg_structural_matrices(
+    index_path: Path,
+    feature_names_path: Path,
+) -> tuple[dict[str, np.ndarray], list[str]]:
+    """Load deterministic label-free NDG features keyed by project."""
+    index = pd.read_csv(index_path)
+    required = {"dataset_name", "num_nodes", "feature_dim", "structural_x_npy"}
+    missing = sorted(required - set(index.columns))
+    if missing:
+        raise ValueError(f"NDG structural index is missing columns: {missing}")
+    feature_names = [str(value) for value in load_json(feature_names_path)]
+    matrices: dict[str, np.ndarray] = {}
+    for _, row in index.iterrows():
+        dataset_name = str(row["dataset_name"])
+        matrix = np.load(str(row["structural_x_npy"])).astype(np.float32)
+        expected_shape = (int(row["num_nodes"]), len(feature_names))
+        if matrix.shape != expected_shape:
+            raise ValueError(
+                f"NDG structural matrix for {dataset_name} has shape {matrix.shape}; "
+                f"expected {expected_shape}"
+            )
+        if not np.isfinite(matrix).all():
+            raise ValueError(f"NDG structural matrix for {dataset_name} is not finite")
+        matrices[dataset_name] = matrix
+    return matrices, feature_names
+
+
+def load_base_ndgs(
+    index_path: Path,
+    num_forward_relations: int,
+    structural_matrices: dict[str, np.ndarray] | None = None,
+) -> dict[str, BaseNDGProject]:
     index = pd.read_csv(index_path)
     required = {"dataset_name", "graph_json", "x_npy", "y_npy", "edge_index_npy", "edge_type_npy"}
     missing = sorted(required - set(index.columns))
@@ -595,6 +644,18 @@ def load_base_ndgs(index_path: Path, num_forward_relations: int) -> dict[str, Ba
             np.load(row["edge_type_npy"]).astype(np.int64),
             num_forward_relations,
         )
+        node_count = len(nodes)
+        if structural_matrices is None:
+            structural_x = np.empty((node_count, 0), dtype=np.float32)
+        else:
+            if dataset_name not in structural_matrices:
+                raise ValueError(f"Missing NDG structural features for {dataset_name}")
+            structural_x = structural_matrices[dataset_name]
+            if structural_x.shape[0] != node_count:
+                raise ValueError(
+                    f"NDG and structural node counts differ for {dataset_name}: "
+                    f"{node_count} != {structural_x.shape[0]}"
+                )
         projects[dataset_name] = BaseNDGProject(
             dataset_name=dataset_name,
             names=[str(node["name"]) for node in nodes],
@@ -603,6 +664,7 @@ def load_base_ndgs(index_path: Path, num_forward_relations: int) -> dict[str, Ba
             y=np.load(row["y_npy"]).astype(np.float32),
             edge_index=edge_index,
             edge_type=edge_type,
+            ndg_structural_x=structural_x,
         )
     return projects
 
@@ -641,6 +703,7 @@ def assemble_ndgs(
             y=torch.from_numpy(base.y),
             edge_index=torch.from_numpy(base.edge_index),
             edge_type=torch.from_numpy(base.edge_type),
+            ndg_structural_x=torch.from_numpy(base.ndg_structural_x),
         )
     return graphs
 
@@ -678,6 +741,7 @@ def run_outer_fold(
     cfg_index: pd.DataFrame,
     cfg_vocabs: tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]],
     cfg_feature_names: list[str],
+    ndg_structural_feature_names: list[str],
     ndg_config: NDGEncoderConfig,
     args: argparse.Namespace,
     device: torch.device,
@@ -725,6 +789,9 @@ def run_outer_fold(
     fit_graph = combine_graphs([selection_graphs[project] for project in fit_projects])
     validation_graph = selection_graphs[validation_project]
     fit_graph, validation_graph = standardize_metrics(fit_graph, validation_graph)
+    fit_graph, validation_graph = standardize_ndg_structural_features(
+        fit_graph, validation_graph
+    )
     cluster_metadata: dict[str, Any] | None = None
     selected_cluster_count: int | None = None
     selected_hdbscan_min_cluster_size: int | None = None
@@ -795,6 +862,7 @@ def run_outer_fold(
     full_train = combine_graphs([final_graphs[project] for project in outer_train_projects])
     test_graph = final_graphs[test_project]
     full_train, test_graph = standardize_metrics(full_train, test_graph)
+    full_train, test_graph = standardize_ndg_structural_features(full_train, test_graph)
     test_cluster_assignments = np.full(test_graph.num_nodes, -1, dtype=np.int64)
     test_cluster_confidence = np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
     test_cluster_outlier_distance = np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
@@ -854,6 +922,11 @@ def run_outer_fold(
         if args.cluster_features
         else np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
     )
+    test_ndg_structural_gate = (
+        attention_diagnostics["ndg_structural_gate"].reshape(-1).astype(np.float32)
+        if args.ndg_structural_features
+        else np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
+    )
     print(
         f"fold={test_project} stage=ndg_final status=finished "
         f"seconds={time.perf_counter() - stage_started:.1f}",
@@ -880,6 +953,8 @@ def run_outer_fold(
         "test_project_used_by_ndg_training": False,
         "test_project_used_by_clustering": False,
         "test_project_used_by_cluster_defect_risk": False,
+        "test_project_used_for_ndg_structural_scaling": False,
+        "ndg_structural_features_use_labels": False,
         "test_project_used_for_threshold_selection": False,
     }
     (fold_dir / "split.json").write_text(json.dumps(split, indent=2), encoding="utf-8")
@@ -915,6 +990,7 @@ def run_outer_fold(
             "decision_threshold": decision_threshold,
             "protocol": "strict_nested_LOPO",
             "cluster_features": cluster_metadata,
+            "ndg_structural_feature_names": ndg_structural_feature_names,
         },
         fold_dir / "ndg_encoder.pt",
     )
@@ -937,6 +1013,7 @@ def run_outer_fold(
             "cluster_outlier_distance": test_cluster_outlier_distance,
             "cluster_defect_risk": test_cluster_defect_risk,
             "cluster_gate": test_cluster_gate,
+            "ndg_structural_gate": test_ndg_structural_gate,
         }
     )
     predictions.to_csv(fold_dir / "test_node_predictions.csv", index=False)
@@ -956,6 +1033,17 @@ def run_outer_fold(
         "cluster_feature_dim": cluster_dim,
         "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_features else None,
         "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_features else None,
+        "ndg_structural_feature_dim": fold_ndg_config.ndg_structural_dim,
+        "ndg_structural_gate_mean": (
+            float(np.nanmean(test_ndg_structural_gate))
+            if args.ndg_structural_features
+            else None
+        ),
+        "ndg_structural_gate_std": (
+            float(np.nanstd(test_ndg_structural_gate))
+            if args.ndg_structural_features
+            else None
+        ),
         **{f"model_{key}": value for key, value in metrics.items()},
         **{f"baseline_{key}": value for key, value in baseline_metrics.items()},
     }
@@ -1013,6 +1101,11 @@ def main() -> None:
     args = parse_args()
     if min(args.upstream_epochs, args.ndg_epochs, args.patience, args.ast_batch_size, args.cfg_batch_size) <= 0:
         raise ValueError("Epoch, patience, and batch-size arguments must be positive")
+    if args.cluster_features and args.ndg_structural_features:
+        raise ValueError(
+            "The NDG structural branch replaces the legacy cluster branch; "
+            "disable one of them for a controlled experiment"
+        )
     if args.cluster_features:
         cluster_args(args, args.seed)
         if args.cluster_method == "hdbscan" and args.cluster_count is not None:
@@ -1025,8 +1118,24 @@ def main() -> None:
 
     ndg_edge_vocab = {str(key): int(value) for key, value in load_json(resolve_path(args.ndg_edge_vocab)).items()}
     ndg_feature_names = [str(value) for value in load_json(resolve_path(args.ndg_feature_names))]
-    base_ndgs = load_base_ndgs(resolve_path(args.ndg_index), len(ndg_edge_vocab))
+    if args.ndg_structural_features:
+        structural_matrices, ndg_structural_feature_names = load_ndg_structural_matrices(
+            resolve_path(args.ndg_structural_index),
+            resolve_path(args.ndg_structural_feature_names),
+        )
+    else:
+        structural_matrices, ndg_structural_feature_names = {}, []
+    base_ndgs = load_base_ndgs(
+        resolve_path(args.ndg_index),
+        len(ndg_edge_vocab),
+        structural_matrices if args.ndg_structural_features else None,
+    )
     all_projects = sorted(base_ndgs)
+    extra_structural_projects = sorted(set(structural_matrices) - set(all_projects))
+    if extra_structural_projects:
+        raise ValueError(
+            f"NDG structural index contains unknown projects: {extra_structural_projects}"
+        )
     selected_test_projects = args.test_project or all_projects
     unknown = sorted(set(selected_test_projects) - set(all_projects))
     if unknown:
@@ -1065,6 +1174,7 @@ def main() -> None:
         ast_dim=args.embedding_dim,
         cfg_dim=args.embedding_dim,
         num_edge_types=2 * len(ndg_edge_vocab),
+        ndg_structural_dim=len(ndg_structural_feature_names),
         hidden_dim=args.hidden_dim,
         output_dim=args.embedding_dim,
         edge_type_embedding_dim=16,
@@ -1076,7 +1186,8 @@ def main() -> None:
     )
     print(
         f"Strict nested LOPO started: outer_folds={len(selected_test_projects)} projects={len(all_projects)} "
-        f"nodes={sum(len(project.names) for project in base_ndgs.values())} device={device}",
+        f"nodes={sum(len(project.names) for project in base_ndgs.values())} device={device} "
+        f"ndg_structural_features={len(ndg_structural_feature_names)}",
         flush=True,
     )
     fold_rows: list[dict[str, Any]] = []
@@ -1095,6 +1206,7 @@ def main() -> None:
             cfg_index,
             (node_vocab, stmt_vocab, invoke_vocab, cfg_edge_vocab),
             cfg_feature_names,
+            ndg_structural_feature_names,
             ndg_config,
             args,
             device,
@@ -1137,6 +1249,7 @@ def main() -> None:
             "CFG training and epoch selection",
             "NDG training and epoch selection",
             "metric normalization",
+            "NDG structural-feature normalization",
             "cluster-count selection and cluster fitting",
             "cluster defect-risk estimation",
             "decision-threshold selection",
@@ -1230,6 +1343,23 @@ def main() -> None:
             },
             "features_per_fold": {
                 str(row["test_project"]): row["cluster_feature_dim"] for row in fold_rows
+            },
+        },
+        "ndg_structural_features": {
+            "enabled": args.ndg_structural_features,
+            "feature_dim": len(ndg_structural_feature_names),
+            "feature_names": ndg_structural_feature_names,
+            "uses_defect_labels": False,
+            "extraction_scope": "each project NDG topology independently",
+            "normalization": "mean and standard deviation fitted on training nodes only",
+            "integration": (
+                "gated residual augmentation after relational NDG message passing and before "
+                "late fusion with AST and CFG"
+                if args.ndg_structural_features
+                else None
+            ),
+            "gate_mean_by_fold": {
+                str(row["test_project"]): row["ndg_structural_gate_mean"] for row in fold_rows
             },
         },
         "cfg_placeholder_policy": "Missing CFG view is masked; the NDG file node is retained.",

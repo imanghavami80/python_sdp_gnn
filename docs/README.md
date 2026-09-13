@@ -14,6 +14,7 @@ specific stage.
 | 3 | CFG extraction | `scripts/extract_promise_cfg.py` | [CFG extraction](pipeline/extract_promise_cfg.md) |
 | 3a | Soot backend | `scripts/soot_cfg_extractor.java` | [Soot backend](reference/soot_cfg_extractor.md) |
 | 4 | NDG extraction | `scripts/extract_promise_ndg.py` | [NDG extraction](pipeline/extract_promise_ndg.md) |
+| 4a | NDG structural features | `scripts/extract_ndg_structural_features.py` | [NDG structural features](features/ndg_structural_features.md) |
 | 5 | Final evaluation | `scripts/evaluate_ndg_nested_lopo.py` | [Nested LOPO](training/evaluate_ndg_nested_lopo.md) |
 
 ## Models
@@ -23,6 +24,7 @@ specific stage.
 | AST GIN encoder | `src/thesis_project/models/ast_encoder.py` | [AST model](models/ast_encoder.md) |
 | Edge-aware CFG GAT | `src/thesis_project/models/cfg_encoder.py` | [CFG model](models/cfg_encoder.md) |
 | Multi-view relational NDG GAT | `src/thesis_project/models/ndg_encoder.py` | [NDG model](models/ndg_encoder.md) |
+| Handcrafted NDG structural view | `src/thesis_project/features/ndg_structural.py` | [NDG structural features](features/ndg_structural_features.md) |
 | Cluster-derived metric features | `src/thesis_project/training/clustering.py` | [Cluster features](features/cluster_features.md) |
 
 ## Supporting Training Workflows

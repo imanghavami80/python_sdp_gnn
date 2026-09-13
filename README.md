@@ -33,22 +33,18 @@ PROMISE CSV + Java source code
        v             v             v
    Extract AST   Extract CFG    Software metrics
        |          with Soot          |
-       v             |               v
-   AST encoder       v        Training-only k-means++ / GMM / HDBSCAN
-                 CFG encoder   cluster geometry + risk
-       |             |               |
-       +-------------+---------------+
-              |
-Gated metrics/cluster branch + AST embedding + CFG embedding
-              |
-              v
-     Project-level typed NDG
-              |
-              v
-  Relational GNN node classification
-              |
-              v
- Defect probability and embedding for every file
+       v             v               v
+   AST encoder   CFG encoder   Project-level typed NDG
+       |             |          |                 |
+       |             |          v                 v
+       |             |    Relational GNN   Structural descriptors
+       |             |          |          (label-free, 38/file)
+       |             |          +--------gated residual
+       +-------------+--------------------+
+                         late fusion
+                              |
+                              v
+                 Node-level defect classification
 ```
 
 The project uses strict nested Leave-One-Project-Out (LOPO) as its primary
@@ -226,8 +222,15 @@ outputs/promise/ndg/ndg_summary.json
 ```
 
 At extraction time, NDG node tensors contain the 20 preprocessed metrics. The
-final evaluator adds training-only cluster features and fold-specific AST and
-CFG embeddings. See [cluster-based features](docs/features/cluster_features.md).
+structural feature stage derives 38 label-free topology descriptors per file:
+
+```bash
+python scripts/extract_ndg_structural_features.py
+```
+
+The final evaluator adds the descriptors through a gated residual after NDG
+message passing and combines that enriched representation with fold-specific
+AST and CFG embeddings. See [handcrafted NDG structural features](docs/features/ndg_structural_features.md).
 
 ### 5. Train and Evaluate the Final Model
 
@@ -243,13 +246,12 @@ For every outer LOPO fold, the evaluator:
 1. Holds out one complete project for testing.
 2. Uses another training project for inner epoch selection.
 3. Fits metric imputation and scaling only on training files.
-4. Selects and fits k-means++, GMM, or HDBSCAN using only the appropriate training files,
-   then builds a separate cluster view from component distances, soft
-   memberships, outlier evidence, and cross-fitted cluster defect risk.
+4. Standardizes label-free handcrafted NDG structural descriptors using only
+   the appropriate training files.
 5. Trains the AST and CFG encoders without the outer test project.
 6. Generates fold-specific AST and CFG embeddings.
-7. Injects the cluster view through a learnable residual gate, then combines
-   the resulting NDG view with the available AST and CFG embeddings.
+7. Enriches the learned NDG embedding through a structural residual gate, then
+   combines it with the available AST and CFG embeddings.
 8. Gives every training project equal total loss weight, preventing large
    projects from dominating optimization.
 9. Selects the decision threshold using only the inner-validation project.
@@ -260,8 +262,11 @@ Use `--fusion-stage early` for the implementation design or
 `--fusion-stage late` for the proposal design. Write them to separate output
 directories and report both as a predeclared ablation.
 
-Cluster features are enabled by default. Use `--no-cluster-features` only for
-the required with/without-clustering ablation. Automatic selection considers
+NDG structural features are enabled by default. Use
+`--no-ndg-structural-features` for the controlled baseline ablation. The old
+cluster branch is retained only for historical experiments and is opt-in with
+`--cluster-features --no-ndg-structural-features`. Automatic cluster selection
+considers
 `K=2..10`; `--cluster-count K` uses a predeclared fixed count. Select
 `--cluster-method kmeans` for silhouette-selected k-means++ or
 `--cluster-method gmm` for BIC-selected Gaussian mixtures, or

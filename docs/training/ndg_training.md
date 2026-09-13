@@ -15,7 +15,7 @@ Represents one project NDG with:
 
 ```text
 file names and source paths
-metric, AST, and CFG node features
+metric, AST, CFG, and optional handcrafted NDG structural node features
 view-availability mask
 per-node training loss weight
 binary node labels
@@ -49,6 +49,14 @@ dominate optimization merely because it contains more files.
 4. Applies those fixed parameters to validation and test graphs.
 
 No validation or test value influences fitted transformations.
+
+## Leakage-Safe NDG Structural Transformation
+
+`standardize_ndg_structural_features` fits a mean and population standard
+deviation on training nodes and applies those fixed values to validation or
+test nodes. The extractor itself is label-free; this fold-specific transform
+prevents the held-out project's feature distribution from influencing model
+training.
 
 ## Cluster-Derived Metric Features
 
@@ -85,6 +93,7 @@ evaluated labels contain only one class.
 
 - Pass only outer-training graphs to fitting functions.
 - Apply `standardize_metrics` separately for each outer fold.
+- Apply `standardize_ndg_structural_features` separately for each outer fold.
 - Fit cluster geometry and risk after standardization and only on the relevant training graph.
 - Cross-fit risk for training projects; never encode a project from its own labels.
 - Never combine a held-out project into the disconnected training graph.

@@ -15,6 +15,8 @@ For one project graph or disconnected training projects:
 - `metrics_x`: the 20 transformed metrics `[num_files, metrics_dim]`.
 - `cluster_x`: an optional separate cluster representation containing geometry
   and leakage-safe risk features `[num_files, cluster_dim]`.
+- `ndg_structural_x`: optional label-free handcrafted NDG topology descriptors
+  `[num_files, ndg_structural_dim]`.
 - `ast_x`: fold-specific AST embeddings `[num_files, ast_dim]`.
 - `cfg_x`: fold-specific CFG embeddings `[num_files, cfg_dim]`; the historical
   tensor name is retained for checkpoint compatibility.
@@ -40,6 +42,17 @@ NDG_input = LayerNorm(metric_state + gate * cluster_state)
 The final gate bias is initialized to `-2`, so training begins near the
 no-cluster baseline instead of forcing an unverified feature family into every
 node. The learned per-file gate is written with predictions for diagnostics.
+
+## Gated NDG Structural Augmentation
+
+After relational message passing, a separate projection maps standardized NDG
+structural descriptors into the learned NDG embedding space. A bounded gate
+controls their residual contribution. For late fusion, this enriched NDG view
+is then combined with AST and CFG. The structural transformation is fitted on
+training nodes only.
+
+See [handcrafted NDG structural features](../features/ndg_structural_features.md)
+for the feature definitions and experiment commands.
 
 ## Multi-View Fusion Variants
 
@@ -81,10 +94,11 @@ an `EXTENDS` edge can influence attention differently from `METHOD_CALL`,
 2. Optionally inject the separately projected cluster branch through its gate.
 3. Embed typed forward and inverse NDG relations.
 4. Apply stacked residual edge-aware GATv2 layers.
-5. Fuse before message passing (`early`) or after independent NDG encoding
+5. Optionally enrich the NDG embedding with gated structural descriptors.
+6. Fuse before message passing (`early`) or after independent NDG encoding
    (`late`).
-6. Normalize and project each contextual file state.
-7. Apply the node classifier to produce one defect logit per file.
+7. Normalize and project each contextual file state.
+8. Apply the node classifier to produce one defect logit per file.
 
 There is no graph-level pooling because this is node-level prediction.
 
@@ -107,6 +121,11 @@ Computes normalized weights over only the views available for each node.
 
 Projects metrics and cluster features independently and controls cluster
 influence with a bounded residual gate.
+
+### `GatedNDGStructuralAugmentation`
+
+Projects handcrafted NDG topology descriptors and adds them to the learned NDG
+embedding through a bounded residual gate.
 
 ### `NDGMultiViewRelationalGATEncoder`
 

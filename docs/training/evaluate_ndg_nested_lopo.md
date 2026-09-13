@@ -21,6 +21,7 @@ The script requires completed AST, CFG, and NDG extraction:
 outputs/promise/ast/graph_index.csv
 outputs/promise/cfg/graph_index.csv
 outputs/promise/ndg/graph_index.csv
+outputs/promise/ndg_structural/feature_index.csv
 their tensor directories and vocabulary JSON files
 ```
 
@@ -38,12 +39,12 @@ For each test project:
 5. Choose upstream epochs from the inner validation project.
 6. Retrain fresh AST and CFG models on all outer-training projects.
 7. Generate embeddings for outer-training files and the untouched test project.
-8. Select `K` and fit cluster features on inner-fit metrics, then transform the
-   inner-validation project with fixed centroids and inner-fit defect rates.
-9. Train and select the NDG model using the same inner project boundary.
+8. Standardize the label-free NDG structural descriptors from inner-fit nodes
+   and transform the inner-validation project without refitting.
+9. Train and select the NDG model, including its structural gate, using the
+   same inner project boundary.
 10. Select the F1 decision threshold on that inner-validation project.
-11. Refit clustering with the selected `K` on all outer-training metrics and
-    cross-fit risk for each outer-training project.
+11. Refit metric and structural scaling on all outer-training nodes.
 12. Retrain a fresh NDG on all outer-training projects with equal total loss
     contribution from every project.
 13. Transform, predict, and encode every file node in the outer test project.
@@ -59,6 +60,7 @@ The outer test project is excluded from:
 - CFG training and epoch selection.
 - NDG training and epoch selection.
 - Median imputation and standard scaling.
+- NDG structural-feature normalization.
 - Cluster-count selection, centroids, and cluster-feature normalization.
 - Cluster defect-risk estimation.
 - Class weighting and majority-baseline selection.
@@ -101,7 +103,7 @@ Main controls:
 --ast-batch-size --cfg-batch-size --lr --weight-decay
 --hidden-dim --embedding-dim --ast-layers --cfg-layers
 --ndg-layers --heads --dropout --attention-dropout
---fusion-stage --cluster-features --cluster-method --cluster-count
+--fusion-stage --ndg-structural-features --cluster-features --cluster-method --cluster-count
 --cluster-min --cluster-max --cluster-silhouette-sample-size --cluster-n-init
 --gmm-n-init --gmm-covariance-type --gmm-reg-covar
 --hdbscan-min-cluster-sizes --hdbscan-min-samples --cluster-risk-smoothing
@@ -152,7 +154,6 @@ folds/<test-project>/ndg_encoder.pt
 folds/<test-project>/ast_selection_history.csv
 folds/<test-project>/cfg_selection_history.csv
 folds/<test-project>/ndg_selection_history.csv
-folds/<test-project>/cluster_features.json
 folds/<test-project>/test_node_embeddings.npy
 folds/<test-project>/test_node_predictions.csv
 ```
@@ -173,4 +174,5 @@ secondary because projects contain very different numbers of files.
 - The final embedding matrix has one row per evaluated file node.
 - Fold split files prove project membership at each training boundary.
 - Every prediction records its fold-specific decision threshold.
+- Every prediction records its learned NDG structural-gate value.
 - The embedding index is the authoritative mapping from matrix rows to files.

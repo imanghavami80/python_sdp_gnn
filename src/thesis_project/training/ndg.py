@@ -40,6 +40,7 @@ class ProjectGraph:
     edge_index: Tensor
     edge_type: Tensor
     cluster_x: Tensor | None = None
+    ndg_structural_x: Tensor | None = None
 
     @property
     def num_nodes(self) -> int:
@@ -59,6 +60,9 @@ class ProjectGraph:
             edge_index=self.edge_index.to(device),
             edge_type=self.edge_type.to(device),
             cluster_x=None if self.cluster_x is None else self.cluster_x.to(device),
+            ndg_structural_x=(
+                None if self.ndg_structural_x is None else self.ndg_structural_x.to(device)
+            ),
         )
 
 
@@ -93,6 +97,13 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
     if len(cluster_dims) != 1:
         raise ValueError("All combined projects must have the same cluster feature dimension")
     cluster_dim = cluster_dims.pop()
+    structural_dims = {
+        0 if graph.ndg_structural_x is None else int(graph.ndg_structural_x.size(1))
+        for graph in graphs
+    }
+    if len(structural_dims) != 1:
+        raise ValueError("All combined projects must have the same NDG structural feature dimension")
+    structural_dim = structural_dims.pop()
     for graph in graphs:
         edge_indices.append(graph.edge_index + node_offset)
         # Equalize total loss contribution across differently sized projects.
@@ -120,6 +131,13 @@ def combine_graphs(graphs: list[ProjectGraph]) -> ProjectGraph:
         cluster_x=(
             torch.cat([graph.cluster_x for graph in graphs if graph.cluster_x is not None])
             if cluster_dim
+            else None
+        ),
+        ndg_structural_x=(
+            torch.cat(
+                [graph.ndg_structural_x for graph in graphs if graph.ndg_structural_x is not None]
+            )
+            if structural_dim
             else None
         ),
     )
@@ -155,6 +173,49 @@ def standardize_metrics(train_graph: ProjectGraph, *other_graphs: ProjectGraph) 
             edge_index=graph.edge_index,
             edge_type=graph.edge_type,
             cluster_x=graph.cluster_x,
+            ndg_structural_x=graph.ndg_structural_x,
+        )
+
+    return tuple(transform(graph) for graph in (train_graph, *other_graphs))
+
+
+def standardize_ndg_structural_features(
+    train_graph: ProjectGraph,
+    *other_graphs: ProjectGraph,
+) -> tuple[ProjectGraph, ...]:
+    """Standardize label-free NDG descriptors using training nodes only."""
+    if train_graph.ndg_structural_x is None:
+        if any(graph.ndg_structural_x is not None for graph in other_graphs):
+            raise ValueError("NDG structural feature availability differs across graphs")
+        return (train_graph, *other_graphs)
+    if any(graph.ndg_structural_x is None for graph in other_graphs):
+        raise ValueError("NDG structural feature availability differs across graphs")
+    training_values = train_graph.ndg_structural_x
+    if not torch.isfinite(training_values).all():
+        raise ValueError("Training NDG structural features contain non-finite values")
+    mean = training_values.mean(dim=0)
+    std = training_values.std(dim=0, unbiased=False).clamp_min(1e-6)
+
+    def transform(graph: ProjectGraph) -> ProjectGraph:
+        if graph.ndg_structural_x is None:
+            raise AssertionError("Structural feature presence was validated")
+        values = (graph.ndg_structural_x - mean) / std
+        if not torch.isfinite(values).all():
+            raise ValueError(f"Non-finite NDG structural features remain in {graph.dataset_name}")
+        return ProjectGraph(
+            dataset_name=graph.dataset_name,
+            names=graph.names,
+            source_paths=graph.source_paths,
+            metrics_x=graph.metrics_x,
+            ast_x=graph.ast_x,
+            cfg_x=graph.cfg_x,
+            view_mask=graph.view_mask,
+            loss_weight=graph.loss_weight,
+            y=graph.y,
+            edge_index=graph.edge_index,
+            edge_type=graph.edge_type,
+            cluster_x=graph.cluster_x,
+            ndg_structural_x=values,
         )
 
     return tuple(transform(graph) for graph in (train_graph, *other_graphs))
@@ -164,9 +225,13 @@ def model_inputs(graph: ProjectGraph) -> dict[str, Tensor]:
     cluster_x = graph.cluster_x
     if cluster_x is None:
         cluster_x = graph.metrics_x.new_empty((graph.num_nodes, 0))
+    ndg_structural_x = graph.ndg_structural_x
+    if ndg_structural_x is None:
+        ndg_structural_x = graph.metrics_x.new_empty((graph.num_nodes, 0))
     return {
         "metrics_x": graph.metrics_x,
         "cluster_x": cluster_x,
+        "ndg_structural_x": ndg_structural_x,
         "ast_x": graph.ast_x,
         "cfg_x": graph.cfg_x,
         "view_mask": graph.view_mask,

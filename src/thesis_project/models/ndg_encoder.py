@@ -18,6 +18,7 @@ class NDGEncoderConfig:
     cfg_dim: int
     num_edge_types: int
     cluster_dim: int = 0
+    ndg_structural_dim: int = 0
     hidden_dim: int = 128
     output_dim: int = 128
     edge_type_embedding_dim: int = 16
@@ -33,6 +34,8 @@ class NDGEncoderConfig:
                 raise ValueError(f"{name} must be positive")
         if self.cluster_dim < 0:
             raise ValueError("cluster_dim must be non-negative")
+        if self.ndg_structural_dim < 0:
+            raise ValueError("ndg_structural_dim must be non-negative")
         if self.edge_type_embedding_dim <= 0:
             raise ValueError("edge_type_embedding_dim must be positive")
         if self.num_layers <= 0:
@@ -111,6 +114,32 @@ class GatedClusterMetricEncoder(nn.Module):
         cluster_state = self.cluster_projection(cluster_x)
         gate = self.cluster_gate(torch.cat([metrics_state, cluster_state], dim=-1))
         return self.output_norm(metrics_state + gate * cluster_state), gate
+
+
+class GatedNDGStructuralAugmentation(nn.Module):
+    """Add label-free NDG topology descriptors to the learned NDG view."""
+
+    def __init__(self, structural_dim: int, embedding_dim: int, dropout: float) -> None:
+        super().__init__()
+        if structural_dim <= 0:
+            raise ValueError("structural_dim must be positive")
+        self.projection = ViewProjection(structural_dim, embedding_dim, dropout)
+        gate_hidden_dim = max(embedding_dim // 2, 1)
+        self.gate = nn.Sequential(
+            nn.LayerNorm(2 * embedding_dim),
+            nn.Linear(2 * embedding_dim, gate_hidden_dim),
+            nn.GELU(),
+            nn.Linear(gate_hidden_dim, 1),
+            nn.Sigmoid(),
+        )
+        # Start close to the learned NDG-only view. Structural evidence must
+        # earn a larger contribution during validation-controlled training.
+        nn.init.constant_(self.gate[-2].bias, -2.0)
+
+    def forward(self, ndg_embedding: Tensor, structural_x: Tensor) -> tuple[Tensor, Tensor]:
+        structural_state = self.projection(structural_x)
+        gate = self.gate(torch.cat([ndg_embedding, structural_state], dim=-1))
+        return ndg_embedding + gate * structural_state, gate
 
 
 class GatedMultiViewFusion(nn.Module):
@@ -223,6 +252,15 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             nn.Dropout(config.dropout),
             nn.LayerNorm(config.output_dim),
         )
+        self.structural_augmentation = (
+            GatedNDGStructuralAugmentation(
+                config.ndg_structural_dim,
+                config.output_dim,
+                config.dropout,
+            )
+            if config.ndg_structural_dim
+            else None
+        )
         self.late_fusion = GatedMultiViewFusion(
             metrics_dim=config.output_dim,
             ast_dim=config.ast_dim,
@@ -245,6 +283,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         self,
         metrics_x: Tensor,
         cluster_x: Tensor,
+        ndg_structural_x: Tensor,
         ast_x: Tensor,
         cfg_x: Tensor,
         view_mask: Tensor,
@@ -258,6 +297,8 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             raise ValueError("metrics_x has an unexpected shape")
         if cluster_x.shape != (num_nodes, self.config.cluster_dim):
             raise ValueError("cluster_x has an unexpected shape")
+        if ndg_structural_x.shape != (num_nodes, self.config.ndg_structural_dim):
+            raise ValueError("ndg_structural_x has an unexpected shape")
         if ast_x.shape != (num_nodes, self.config.ast_dim):
             raise ValueError("ast_x has an unexpected shape")
         if cfg_x.shape != (num_nodes, self.config.cfg_dim):
@@ -313,6 +354,13 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             layer_outputs.append(h)
 
         ndg_embeddings = self.output_projection(torch.cat(layer_outputs, dim=-1))
+        if self.structural_augmentation is not None:
+            ndg_embeddings, structural_gate = self.structural_augmentation(
+                ndg_embeddings, ndg_structural_x
+            )
+        else:
+            structural_gate = metrics_x.new_zeros((num_nodes, 1))
+        attention["ndg_structural_gate"] = structural_gate.detach()
         if self.config.fusion_stage == "late":
             fused, view_weights = self.late_fusion(ndg_embeddings, ast_x, cfg_x, view_mask)
             embeddings = self.late_output_projection(fused)
