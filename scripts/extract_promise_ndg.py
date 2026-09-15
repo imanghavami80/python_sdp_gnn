@@ -7,8 +7,9 @@ import argparse
 import json
 import re
 import shutil
+import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -16,6 +17,7 @@ import javalang
 import numpy as np
 import pandas as pd
 from javalang.ast import Node
+from ndg_resolution import ProjectTypes, ScopedCalls, executables
 
 EDGE_TYPES = [
     "EXTENDS",
@@ -74,7 +76,7 @@ def package_name(tree: Node) -> str:
 
 
 def iter_reference_type_names(type_node: Any) -> Iterable[str]:
-    if type_node is None:
+    if type_node is None or isinstance(type_node, javalang.tree.BasicType):
         return
     if isinstance(type_node, str):
         yield type_node
@@ -100,6 +102,9 @@ class TypeResolver:
     wildcard_imports: list[str]
     known_source_types: set[str]
     simple_to_types: dict[str, set[str]]
+    static_imports: list[tuple[str, bool]] = field(default_factory=list)
+    enclosing_type: str = ""
+    type_parameters: frozenset[str] = frozenset()
 
     def resolve(self, raw_name: str | None) -> str | None:
         if not raw_name:
@@ -108,38 +113,41 @@ class TypeResolver:
         if not name:
             return None
         name = name.replace("[]", "").replace("$", ".")
+        if name.split(".")[0] in self.type_parameters:
+            return None
 
-        candidates: list[str] = []
-        if name in self.known_source_types:
-            candidates.append(name)
-        if name in self.explicit_imports:
-            candidates.append(self.explicit_imports[name])
-        if self.package:
-            candidates.append(f"{self.package}.{name}")
-        candidates.extend(f"{prefix}.{name}" for prefix in self.wildcard_imports)
-        simple_matches = self.simple_to_types.get(name.split(".")[-1], set())
-        if len(simple_matches) == 1:
-            candidates.extend(simple_matches)
-
-        for candidate in candidates:
-            current = candidate
-            while current:
-                if current in self.known_source_types:
-                    return current
-                if "." not in current:
-                    break
-                current = current.rsplit(".", 1)[0]
-        return None
+        if name in self.known_source_types and ("." in name or not self.package):
+            return name
+        prefix = self.enclosing_type
+        while prefix and prefix != self.package:
+            candidate = f"{prefix}.{name}"
+            if candidate in self.known_source_types:
+                return candidate
+            prefix = prefix.rpartition(".")[0]
+        first, _, rest = name.partition(".")
+        if first in self.explicit_imports:
+            candidate = self.explicit_imports[first] + ("." + rest if rest else "")
+            # An explicit external import must not fall through to a project type.
+            return candidate if candidate in self.known_source_types else None
+        local = f"{self.package}.{name}" if self.package else name
+        if local in self.known_source_types:
+            return local
+        candidates = {f"{prefix}.{name}" for prefix in self.wildcard_imports}
+        candidates &= self.known_source_types
+        return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 @dataclass
 class DependencyCollector:
     node_names: set[str]
     relations: set[tuple[str, str, str]] = field(default_factory=set)
+    unresolved: list[dict[str, Any]] = field(default_factory=list)
+    type_files: dict[str, str] = field(default_factory=dict)
 
     def add(self, source_name: str, target_name: str | None, edge_type: str) -> None:
         if target_name is None:
             return
+        target_name = self.type_files.get(target_name, target_name)
         if target_name not in self.node_names:
             return
         if source_name == target_name:
@@ -167,8 +175,12 @@ def build_type_resolver(
 ) -> TypeResolver:
     explicit_imports: dict[str, str] = {}
     wildcard_imports: list[str] = []
+    static_imports: list[tuple[str, bool]] = []
     for imported in getattr(tree, "imports", None) or []:
         path = str(imported.path)
+        if imported.static:
+            static_imports.append((path, bool(imported.wildcard)))
+            continue
         if imported.wildcard:
             wildcard_imports.append(path)
         else:
@@ -179,6 +191,7 @@ def build_type_resolver(
         wildcard_imports=wildcard_imports,
         known_source_types=known_source_types,
         simple_to_types=simple_to_types,
+        static_imports=static_imports,
     )
 
 
@@ -190,51 +203,11 @@ def emit_type_dependencies(
     edge_type: str,
 ) -> None:
     for type_name in iter_reference_type_names(type_node):
-        collector.add(source_name, resolver.resolve(type_name), edge_type)
-
-
-def first_resolved_type(resolver: TypeResolver, type_node: Any) -> str | None:
-    for type_name in iter_reference_type_names(type_node):
-        resolved = resolver.resolve(type_name)
-        if resolved:
-            return resolved
-    return None
-
-
-def collect_symbols(resolver: TypeResolver, declaration: Node) -> dict[str, str]:
-    symbols: dict[str, str] = {}
-    for field_decl in getattr(declaration, "fields", None) or []:
-        resolved = first_resolved_type(resolver, field_decl.type)
-        if resolved:
-            for declarator in field_decl.declarators:
-                symbols[str(declarator.name)] = resolved
-    return symbols
-
-
-def add_scoped_symbols(resolver: TypeResolver, executable: Node, symbols: dict[str, str]) -> None:
-    for parameter in getattr(executable, "parameters", None) or []:
-        resolved = first_resolved_type(resolver, parameter.type)
-        if resolved:
-            symbols[str(parameter.name)] = resolved
-    for _, local_decl in executable.filter(javalang.tree.LocalVariableDeclaration):
-        resolved = first_resolved_type(resolver, local_decl.type)
-        if resolved:
-            for declarator in local_decl.declarators:
-                symbols[str(declarator.name)] = resolved
-
-
-def invocation_target(qualifier: str | None, symbols: dict[str, str], resolver: TypeResolver) -> str | None:
-    if not qualifier:
-        return None
-    text = str(qualifier)
-    if text.startswith("this."):
-        text = text[5:]
-    if text in symbols:
-        return symbols[text]
-    first = text.split(".", 1)[0]
-    if first in symbols:
-        return symbols[first]
-    return resolver.resolve(text)
+        target = resolver.resolve(type_name)
+        if target is None:
+            collector.unresolved.append({"source_name": source_name, "type_name": type_name,
+                                         "edge_type": edge_type, "reason": "external_or_unresolved_type"})
+        collector.add(source_name, target, edge_type)
 
 
 def extract_file_dependencies(
@@ -242,6 +215,7 @@ def extract_file_dependencies(
     tree: Node,
     resolver: TypeResolver,
     collector: DependencyCollector,
+    project_types: ProjectTypes,
 ) -> None:
     type_declaration_classes = (
         javalang.tree.ClassDeclaration,
@@ -251,7 +225,10 @@ def extract_file_dependencies(
     for _, declaration in tree:
         if not isinstance(declaration, type_declaration_classes):
             continue
-        base_symbols = collect_symbols(resolver, declaration)
+        if id(declaration) not in project_types.by_node:
+            continue
+        info = project_types.types[project_types.by_node[id(declaration)]]
+        resolver = info.resolver
 
         extends = getattr(declaration, "extends", None)
         extends_nodes = extends if isinstance(extends, list) else [extends]
@@ -263,21 +240,26 @@ def extract_file_dependencies(
         for field_decl in getattr(declaration, "fields", None) or []:
             emit_type_dependencies(collector, resolver, source_name, field_decl.type, "FIELD_TYPE")
 
-        executables = list(getattr(declaration, "constructors", None) or []) + list(getattr(declaration, "methods", None) or [])
-        for executable in executables:
-            symbols = dict(base_symbols)
-            add_scoped_symbols(resolver, executable, symbols)
-
+        for executable in executables(declaration):
+            method_resolver = replace(resolver, type_parameters=resolver.type_parameters | {
+                p.name for p in getattr(executable, "type_parameters", None) or []
+            })
             for parameter in getattr(executable, "parameters", None) or []:
-                emit_type_dependencies(collector, resolver, source_name, parameter.type, "PARAMETER_TYPE")
-            emit_type_dependencies(collector, resolver, source_name, getattr(executable, "return_type", None), "RETURN_TYPE")
+                emit_type_dependencies(collector, method_resolver, source_name, parameter.type, "PARAMETER_TYPE")
+            emit_type_dependencies(collector, method_resolver, source_name, getattr(executable, "return_type", None), "RETURN_TYPE")
 
-            for _, invocation in executable.filter(javalang.tree.MethodInvocation):
-                target = invocation_target(getattr(invocation, "qualifier", None), symbols, resolver)
-                collector.add(source_name, target, "METHOD_CALL")
+        ScopedCalls(project_types, info, collector).run()
 
-    for _, creator in tree.filter(javalang.tree.ClassCreator):
-        emit_type_dependencies(collector, resolver, source_name, creator.type, "OBJECT_CREATION")
+    for path, creator in tree.filter(javalang.tree.ClassCreator):
+        enclosing = next((n for n in reversed(path) if isinstance(n, Node) and id(n) in project_types.by_node), None)
+        if enclosing is not None:
+            creator_resolver = project_types.types[project_types.by_node[id(enclosing)]].resolver
+            for parent in path:
+                if isinstance(parent, (javalang.tree.MethodDeclaration, javalang.tree.ConstructorDeclaration)):
+                    creator_resolver = replace(creator_resolver, type_parameters=creator_resolver.type_parameters | {
+                        p.name for p in getattr(parent, "type_parameters", None) or []
+                    })
+            emit_type_dependencies(collector, creator_resolver, source_name, creator.type, "OBJECT_CREATION")
 
 
 def prepare_output_dirs(output_dir: Path, clean: bool) -> tuple[Path, Path]:
@@ -388,6 +370,7 @@ def build_project_ndg(
     parse_fallbacks: list[dict[str, str]] = []
     parse_failures: list[dict[str, str]] = []
     strict_parses = 0
+    trees: dict[str, Node] = {}
 
     for _, row in mapped_rows.iterrows():
         name = str(row["name"])
@@ -405,8 +388,7 @@ def build_project_ndg(
                         "strict_error": str(strict_error),
                     }
                 )
-            resolver = build_type_resolver(tree, node_names, simple_to_types)
-            extract_file_dependencies(name, tree, resolver, collector)
+            trees[name] = tree
         except Exception as error:  # noqa: BLE001
             parse_failures.append(
                 {
@@ -416,6 +398,12 @@ def build_project_ndg(
                     "error": str(error),
                 }
             )
+
+    project_types = ProjectTypes(trees, lambda tree, known: build_type_resolver(tree, known, simple_to_types))
+    collector.type_files = {name: info.file for name, info in project_types.types.items()}
+    for name, tree in trees.items():
+        resolver = build_type_resolver(tree, set(project_types.types), simple_to_types)
+        extract_file_dependencies(name, tree, resolver, collector, project_types)
 
     edges = []
     for source_name, target_name, edge_type_name in sorted(collector.relations):
@@ -442,6 +430,8 @@ def build_project_ndg(
         "graph_id": dataset_name,
         "dataset_name": dataset_name,
         "graph_type": "file_level_network_dependency_graph",
+        "resolution": "lexical_scope",
+        "unresolved_dependencies": collector.unresolved,
         "prediction_granularity": "node",
         "source_root": str(source_root) if source_root else None,
         "directed": True,
@@ -465,6 +455,7 @@ def build_project_ndg(
         "defective_nodes": int(y.sum()),
         "non_defective_nodes": int((y == 0).sum()),
         "strict_parses": int(strict_parses),
+        "unresolved_dependencies": len(collector.unresolved),
         "fallback_parses": int(len(parse_fallbacks)),
         "parse_failures": int(len(parse_failures)),
         "validation_issues": int(len(validation_issues)),
@@ -501,6 +492,7 @@ def write_project_outputs(
         "node_feature_dim": int(graph["node_feature_dim"]),
         "edge_type_vocab_size": int(graph["edge_type_vocab_size"]),
         "graph_json": str(graph_path),
+        "resolution": "lexical_scope",
         "x_npy": str(x_path),
         "y_npy": str(y_path),
         "edge_index_npy": str(edge_index_path),
@@ -520,6 +512,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    started = time.perf_counter()
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     input_csv = (repo_root / args.input_csv).resolve() if not args.input_csv.is_absolute() else args.input_csv.resolve()
@@ -568,6 +561,8 @@ def main() -> None:
 
     summary = {
         "input_csv": str(input_csv),
+        "resolution": "lexical_scope",
+        "elapsed_seconds": time.perf_counter() - started,
         "preprocess_summary": str(summary_path),
         "output_dir": str(output_dir),
         "dataset_filter": args.dataset_name,
@@ -584,6 +579,7 @@ def main() -> None:
         "parse_failures": int(len(parse_failures)),
         "validation_issues": int(len(validation_issues)),
         "feature_names": features,
+        "unresolved_dependencies": sum(row["unresolved_dependencies"] for row in dataset_summaries),
         "edge_types": EDGE_TYPES,
         "datasets": dataset_summaries,
     }

@@ -4,9 +4,10 @@
 
 **Java backend:** `scripts/soot_cfg_extractor.java`
 
-The canonical extractor is CFG v3; there is no version or PDG selector.
-Each graph-index row and extraction summary records `cfg_version=v3`.
-The final evaluator rejects other versions and noncanonical relation vocabularies.
+There is one CFG extractor and no alternative behavioral-view selector.
+Each graph-index row and extraction summary records
+`construction=exceptional_control_flow`. The final evaluator checks this
+construction contract and the exact control-flow relation vocabulary.
 
 ## Purpose
 

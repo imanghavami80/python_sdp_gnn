@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import shutil
 import sys
 import time
@@ -81,7 +82,7 @@ def main() -> None:
         random_state=args.seed,
     )
     index = pd.read_csv(index_path)
-    required = {"dataset_name", "num_nodes", "edge_index_npy", "edge_type_npy"}
+    required = {"dataset_name", "num_nodes", "edge_index_npy", "edge_type_npy", "graph_json"}
     missing = sorted(required - set(index.columns))
     if missing:
         raise ValueError(f"NDG index is missing columns: {missing}")
@@ -111,6 +112,7 @@ def main() -> None:
                 "num_nodes": len(matrix),
                 "feature_dim": matrix.shape[1],
                 "structural_x_npy": str(output_path),
+                "source_graph_sha256": hashlib.sha256(Path(str(row["graph_json"])).read_bytes()).hexdigest(),
             }
         )
         print(

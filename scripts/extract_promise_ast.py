@@ -8,6 +8,8 @@ import hashlib
 import json
 import re
 import shutil
+import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,54 +20,16 @@ import numpy as np
 import pandas as pd
 from javalang.ast import Node
 
-IMPORTANT_NODE_TYPES = {
-    "CompilationUnit",
-    "PackageDeclaration",
-    "Import",
-    "ClassDeclaration",
-    "InterfaceDeclaration",
-    "EnumDeclaration",
-    "MethodDeclaration",
-    "ConstructorDeclaration",
-    "FieldDeclaration",
-    "VariableDeclarator",
-    "FormalParameter",
-    "BlockStatement",
-    "IfStatement",
-    "ForStatement",
-    "WhileStatement",
-    "DoStatement",
-    "SwitchStatement",
-    "SwitchStatementCase",
-    "TryStatement",
-    "CatchClause",
-    "SynchronizedStatement",
-    "ReturnStatement",
-    "ThrowStatement",
-    "BreakStatement",
-    "ContinueStatement",
-    "StatementExpression",
-    "LocalVariableDeclaration",
-    "MethodInvocation",
-    "SuperMethodInvocation",
-    "ClassCreator",
-    "Assignment",
-    "BinaryOperation",
-    "TernaryExpression",
-    "Cast",
-    "MemberReference",
-    "This",
-    "Literal",
-    "ReferenceType",
-    "BasicType",
-    "TypeArgument",
-    "Annotation",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from thesis_project.features.ast_schema import (
+    NODE_TYPES, ROLES, OPERATORS, LITERALS, UNARY, FEATURE_DIM, FEATURE_NAMES, literal_category,
+)
 
+IMPORTANT_NODE_TYPES = set(NODE_TYPES)
 NODE_TYPE_EMBEDDING_DIM = 32
 NODE_TYPE_TO_ID = {node_type: i for i, node_type in enumerate(sorted(IMPORTANT_NODE_TYPES))}
-STRUCTURAL_FEATURE_DIM = 3
-MODEL_NODE_FEATURE_DIM = NODE_TYPE_EMBEDDING_DIM + STRUCTURAL_FEATURE_DIM
+STRUCTURAL_FEATURE_DIM = FEATURE_DIM
+MODEL_NODE_FEATURE_DIM = NODE_TYPE_EMBEDDING_DIM + STRUCTURAL_FEATURE_DIM - 3 + 3 * 8
 
 
 @dataclass(frozen=True)
@@ -76,6 +40,12 @@ class KeptNode:
     sibling_index: int
     parent_id: int | None
     text_hint: str
+    role: str = "ROOT"
+    sibling_count: int = 1
+    operator: str = "NONE"
+    literal: str = "NONE"
+    prefix: tuple[str, ...] = ()
+    postfix: tuple[str, ...] = ()
 
 
 def iter_children(node: Node) -> Iterable[Node]:
@@ -118,10 +88,10 @@ def is_important(node: Node) -> bool:
 def extract_filtered_tree(root: Node) -> tuple[list[KeptNode], list[tuple[int, int]]]:
     kept_nodes: list[KeptNode] = []
     edges: list[tuple[int, int]] = []
-    stack: list[tuple[Node, int, int | None, int]] = [(root, 0, None, 0)]
+    stack = [(root, 0, None, 0, "ROOT", 1)]
 
     while stack:
-        node, depth, nearest_kept_parent, sibling_index = stack.pop()
+        node, depth, nearest_kept_parent, sibling_index, role, sibling_count = stack.pop()
         node_type = type(node).__name__
         current_kept_id = nearest_kept_parent
 
@@ -135,14 +105,35 @@ def extract_filtered_tree(root: Node) -> tuple[list[KeptNode], list[tuple[int, i
                     sibling_index=sibling_index,
                     parent_id=nearest_kept_parent,
                     text_hint=infer_text_hint(node),
+                    role=role,
+                    sibling_count=sibling_count,
+                    operator=str(getattr(node, "operator", None) or
+                                 (getattr(node, "type", None) if node_type == "Assignment" else None) or "NONE"),
+                    literal=literal_category(node.value) if node_type == "Literal" else "NONE",
+                    prefix=tuple(getattr(node, "prefix_operators", None) or []),
+                    postfix=tuple(getattr(node, "postfix_operators", None) or []),
                 )
             )
             if nearest_kept_parent is not None:
                 edges.append((nearest_kept_parent, current_kept_id))
 
-        children = list(iter_children(node))
-        for rev_idx, child in enumerate(reversed(children)):
-            stack.append((child, depth + 1, current_kept_id, len(children) - rev_idx - 1))
+        children = []
+        for attr in node.attrs:
+            value = getattr(node, attr)
+            values = value if isinstance(value, (list, tuple)) else [value]
+            # Initializer blocks are represented as lists nested in a class body.
+            def flatten(items):
+                for item in items:
+                    if isinstance(item, Node):
+                        yield item
+                    elif isinstance(item, (list, tuple)):
+                        # Keep initializer-block boundaries instead of merging
+                        # their statements with adjacent class members.
+                        yield javalang.tree.BlockStatement(statements=list(item))
+            group = list(flatten(values))
+            children.extend((child, i, attr, len(group)) for i, child in enumerate(group))
+        for child, index, attr, count in reversed(children):
+            stack.append((child, depth + 1, current_kept_id, index, attr, count))
 
     return kept_nodes, edges
 
@@ -255,6 +246,14 @@ def build_feature_matrix(
         x[i, 0] = float(node.depth)
         x[i, 1] = float(out_degree[i])
         x[i, 2] = 1.0 if node.text_hint and any(char.isalpha() for char in node.text_hint) else 0.0
+        x[i, 3] = OPERATORS.index(node.operator if node.operator in OPERATORS else "UNKNOWN")
+        x[i, 4] = LITERALS.index(node.literal)
+        x[i, 5] = ROLES.index(node.role if node.role in ROLES else "UNKNOWN")
+        x[i, 6] = np.log1p(node.sibling_index)
+        x[i, 7] = node.sibling_index / max(node.sibling_count - 1, 1)
+        for j, op in enumerate(UNARY):
+            x[i, 8 + j] = np.log1p(node.prefix.count(op))
+            x[i, 8 + len(UNARY) + j] = np.log1p(node.postfix.count(op))
 
     return x, node_type_ids
 
@@ -337,6 +336,13 @@ def extract_one(row: pd.Series, graphs_dir: Path, tensors_dir: Path) -> tuple[di
                     "node_type_id": NODE_TYPE_TO_ID[node.node_type],
                     "depth": node.depth,
                     "parent_id": node.parent_id,
+                    "role": node.role,
+                    "sibling_index": node.sibling_index,
+                    "sibling_count": node.sibling_count,
+                    "operator": node.operator,
+                    "literal_category": node.literal,
+                    "prefix_operators": node.prefix,
+                    "postfix_operators": node.postfix,
                 }
                 for node in nodes
             ],
@@ -378,6 +384,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    started = time.perf_counter()
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     input_csv = (repo_root / args.input_csv).resolve() if not args.input_csv.is_absolute() else args.input_csv.resolve()
@@ -388,6 +395,10 @@ def main() -> None:
 
     graphs_dir, tensors_dir = prepare_output_dirs(output_dir, clean=not args.no_clean)
     (output_dir / "node_type_vocab.json").write_text(json.dumps(NODE_TYPE_TO_ID, indent=2), encoding="utf-8")
+    (output_dir / "syntax_schema.json").write_text(json.dumps({
+        "operators": OPERATORS, "literals": LITERALS,
+        "roles": ROLES, "unary_operators": UNARY, "feature_dim": FEATURE_DIM, "feature_names": FEATURE_NAMES,
+    }, indent=2), encoding="utf-8")
 
     input_df = pd.read_csv(input_csv)
     mapped = load_mapped_rows(input_csv, args.dataset_name)
@@ -435,6 +446,7 @@ def main() -> None:
     top_types = type_counter.most_common(20)
     summary = {
         "input_csv": str(input_csv),
+        "elapsed_seconds": time.perf_counter() - started,
         "output_dir": str(output_dir),
         "dataset_filter": args.dataset_name,
         "input_rows": int(len(input_df)),

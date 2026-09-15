@@ -2,7 +2,7 @@
 
 Historical report: measurements below describe experiments completed before the
 scenario cleanup. Their generated graphs, predictions, and checkpoints were
-deleted with `outputs/` at the user's request. Only CFG v3 and late fusion are
+deleted with `outputs/` at the user's request. Only CFG and late fusion are
 active now; clustering (none/simple/gated) and NDG structural features (off/on)
 are independent scenario choices. Tables are preserved as historical records,
 not new evaluation results.
@@ -34,8 +34,8 @@ follows:
 | --- | ---: | ---: | --- |
 | CFG + def-use | 3,870 / 5,303 | 72.98% | First strict baseline; Log4j repaired to 178 / 194. |
 | PDG | 3,870 / 5,303 | 72.98% | Added data and control dependence but used the same valid bytecode. |
-| CFG v2 | 4,046 / 5,303 | 76.30% | Correct exception-aware CFG and improved complete-project compilation. |
-| CFG v3 | 4,573 / 5,303 | 86.23% | Recovered Camel and Synapse using verified exact-release bytecode. |
+| CFG before bytecode recovery | 4,046 / 5,303 | 76.30% | Correct exception-aware CFG and improved complete-project compilation. |
+| CFG | 4,573 / 5,303 | 86.23% | Recovered Camel and Synapse using verified exact-release bytecode. |
 
 Thus, credible coverage increased from **3,870 to 4,046 and then to 4,573**.
 
@@ -96,7 +96,7 @@ The PDG achieved F1 0.4753 and MCC 0.0870 and did not outperform the simpler CFG
 overall. It also increased code and model complexity, so it was removed from the
 active pipeline and retained only as a historical ablation.
 
-### CFG v2
+### CFG before bytecode recovery
 
 **Why we moved to it:** PDG increased complexity but did not improve the main
 prediction results, and CFG is the behavioral view required by the thesis. A
@@ -107,7 +107,7 @@ two-branch PDG encoder were removed. They were replaced by one CFG encoder over
 11 precise normal and exceptional control-flow relations, together with stricter
 compilation and validation.
 
-The behavioral view was simplified back to one precise CFG. CFG v2 used 11
+The behavioral view was simplified back to one precise CFG. CFG before bytecode recovery used 11
 distinct relations for entry, fall-through, true/false branches, goto, switch,
 return, throw, caught exceptions, and escaping exceptions. Loop features were
 computed from graph cycles, compiler-error bodies were rejected, and the whole
@@ -117,28 +117,28 @@ Coverage increased to 4,046 files with zero validation errors. It achieved F1
 0.5134, balanced accuracy 0.5692, and G-Mean 0.4237. It was selected because its
 semantics were clearer and more defensible than the def-use and PDG versions.
 
-### CFG v3
+### CFG
 
-**Why we moved to it:** CFG v2 was logically correct, but missing legacy
+**Why we moved to it:** CFG before bytecode recovery was logically correct, but missing legacy
 dependencies still left major coverage gaps in Camel and Synapse. The next goal
 was to recover valid graphs without weakening CFG correctness.
 
-**Difference from CFG v2:** The graph schema, features, and model are unchanged.
+**Difference from CFG before bytecode recovery:** The graph schema, features, and model are unchanged.
 Only bytecode acquisition changed: exact, checksum-verified official binaries
 are preferred for Camel and Synapse, with source-compiled bytecode as fallback.
 
-CFG v3 keeps the same graph schema and model as v2. Its only change is improved
+CFG keeps the same graph schema and model as the pre-recovery CFG. Its only change is improved
 bytecode recovery. For Camel 1.6 and Synapse 1.2, exact official Apache release
 JARs are downloaded, checksum-verified, and placed before incomplete compiler
 stubs. No approximate or fabricated graph is created.
 
 Coverage increased to 4,573/5,303 files: Camel improved from 384 to 804 graphs,
 Synapse from 121 to 228, and Log4j remained at 178/194. The remaining 204 Xerces
-placeholders are interfaces without executable method bodies. All generated v3
+placeholders are interfaces without executable method bodies. All generated current CFG
 graphs passed validation.
 
-CFG v3 achieved recall 0.8480, F1 0.5183, ROC-AUC 0.6936, PR-AUC 0.5777, and
-Brier score 0.2465. It improved several results over v2, but reduced balanced
+CFG achieved recall 0.8480, F1 0.5183, ROC-AUC 0.6936, PR-AUC 0.5777, and
+Brier score 0.2465. It improved several results over the pre-recovery CFG, but reduced balanced
 accuracy, precision, MCC, and G-Mean.
 
 ## Final Results Comparison
@@ -146,7 +146,7 @@ accuracy, precision, MCC, and G-Mean.
 The table reports the unweighted mean across 12 held-out projects. Bold denotes
 the best mean; lower Brier score is better.
 
-| Metric | Original CFG | CFG + def-use | PDG | CFG v2 | CFG v3 |
+| Metric | Original CFG | CFG + def-use | PDG | CFG before bytecode recovery | CFG |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Accuracy | **0.5530** | 0.5087 | 0.4633 | 0.5198 | 0.5428 |
 | Balanced accuracy | 0.5580 | 0.5638 | 0.5490 | **0.5692** | 0.5326 |
@@ -166,14 +166,14 @@ final extractor.
 ## Current Conclusion
 
 The PDG and def-use experiments showed that adding relations does not
-automatically improve prediction. CFG v2 provided the clearest control-flow
-semantics, and CFG v3 retained that design while substantially improving valid
+automatically improve prediction. CFG before bytecode recovery provided the clearest control-flow
+semantics, and CFG retained that design while substantially improving valid
 coverage.
 
-No method won every metric. CFG v2 retained the best balanced accuracy and
-G-Mean. CFG v3 obtained the best recall, slightly best F1, and best Brier score,
+No method won every metric. CFG before bytecode recovery retained the best balanced accuracy and
+G-Mean. CFG obtained the best recall, slightly best F1, and best Brier score,
 but lower MCC and G-Mean. Thus, the additional valid CFGs improved ranking,
-recall, F1, and calibration relative to v2, but did not improve every
-classification measure. CFG v3 remains the current behavioral view because it
+recall, F1, and calibration relative to the pre-recovery CFG, but did not improve every
+classification measure. CFG remains the current behavioral view because it
 combines the strongest verified coverage with the most defensible CFG design;
 multiple-seed evaluation is required before making a final performance claim.

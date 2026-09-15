@@ -1,6 +1,6 @@
 # 18 — Model Improvement Strategy
 
-The active model always uses AST, CFG v3, relational NDG message passing, and
+The active model always uses AST, CFG, relational NDG message passing, and
 late fusion. The supported scenario factors are cluster mode (none/simple/gated)
 and handcrafted NDG structural features (off/on).
 
@@ -35,7 +35,7 @@ done
 
 Automatic output names include scenario and seed; nonempty directories are
 rejected. Never select the best seed. Compare manifest arguments, input hashes,
-CFG v3 markers, and completed fold counts before aggregating results.
+CFG markers, and completed fold counts before aggregating results.
 
 Historical reports document earlier decisions; they are not results from the
 cleaned architecture. New experiments are required after regenerating inputs.

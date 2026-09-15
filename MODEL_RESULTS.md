@@ -2,19 +2,20 @@
 
 ## Status after cleanup
 
-All generated files under `outputs/` were deleted at the user's request.
-No experiment under the cleaned scenario interface has completed yet. Historical
-measurements below are preserved from earlier reports and comparisons, but their
-raw prediction files and checkpoints are no longer available in this workspace.
+An earlier scenario cleanup deleted the original generated artifacts. The
+measurements below are historical and are not results of the current AST and NDG
+inputs. Inputs have now been regenerated at the default paths, while existing
+experiment directories were preserved. A short integration pilot does not replace
+a full predictive comparison. See [representation improvements](docs/features/representation_improvements.md).
 
-Every new run uses CFG v3 and late fusion. Compare the six combinations of
+Every new run uses CFG and late fusion. Compare the six combinations of
 cluster mode (none/simple/gated) and NDG structural features (off/on), using
 the rebuild and run commands in [00 — README](README.md).
 
 ## Historical extraction
 
 The previously measured benchmark had 12 projects, 5,430 input rows, 5,303
-mapped files, and 12 NDGs. CFG v3 yielded 4,573 valid CFGs and 730 placeholders;
+mapped files, and 12 NDGs. CFG yielded 4,573 valid CFGs and 730 placeholders;
 Log4j had 178 valid CFGs out of 194 files. These counts must be verified again
 from regenerated extraction summaries.
 
@@ -22,7 +23,7 @@ from regenerated extraction summaries.
 
 Unweighted macro-project means, 12 held-out projects, seed 42:
 
-| Metric | Older no-cluster run | CFG v3 + gated k-means | CFG v3 + NDG structural |
+| Metric | Older no-cluster run | CFG + gated k-means | CFG + NDG structural |
 | --- | ---: | ---: | ---: |
 | Accuracy | 0.5271 | 0.5428 | 0.5127 |
 | Balanced accuracy | 0.5567 | 0.5326 | 0.5646 |
@@ -35,7 +36,7 @@ Unweighted macro-project means, 12 held-out projects, seed 42:
 | PR-AUC | 0.5677 | 0.5777 | 0.5706 |
 | Brier score (lower is better) | 0.2804 | 0.2465 | 0.3078 |
 
-The older no-cluster run is not a verified current CFG-v3 baseline. The NDG
+The older no-cluster run is not a verified current CFG baseline. The NDG
 structural run disabled clustering. Its balanced accuracy, MCC, and G-Mean
 increased relative to the gated-cluster run, while several other metrics
 declined. It predicted no defective files in Camel and Xalan; threshold and
@@ -49,5 +50,5 @@ runs are required even for nominally similar scenarios.
 
 See [20 — Short CFG history](docs/reports/cfg_view_progress_report_short.md)
 and [21 — Detailed CFG history](docs/reports/cfg_view_progress_report.md) for
-the recorded original-CFG, def-use, PDG, CFG-v2, and CFG-v3 comparisons.
-Those alternatives are historical only; CFG v3 is the sole active extractor.
+the recorded original-CFG, def-use, PDG, CFG before bytecode recovery, and CFG comparisons.
+Those alternatives are historical only; CFG is the sole active extractor.

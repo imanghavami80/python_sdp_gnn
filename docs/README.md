@@ -5,7 +5,7 @@ Filenames remain stable so links and IDE tabs continue to work. Read 00–13 for
 the core pipeline, 14–18 for diagnostics and evaluation guidance, and 19–21 for
 historical results.
 
-The current system always uses CFG v3 and late fusion. Its scenario controls are
+The current system always uses CFG and late fusion. Its scenario controls are
 cluster mode (none/simple/gated) and NDG structural features (off/on).
 K-means++, GMM, and HDBSCAN remain algorithm settings within active clustering.
 Defaults are no clustering and no structural features.
@@ -34,6 +34,7 @@ Defaults are no clustering and no structural features.
 | 19 | [Model Results and Historical Record](../MODEL_RESULTS.md) |
 | 20 | [Short Report: Improvements to the CFG View](reports/cfg_view_progress_report_short.md) |
 | 21 | [Progress Report: Development of the Behavioral Graph View](reports/cfg_view_progress_report.md) |
+| 22 | [AST and NDG representation improvements](features/representation_improvements.md) |
 
 The generated `outputs/` directory was removed during cleanup. Rebuild data
 using document 00 before experiments. Historical reports retain earlier values;

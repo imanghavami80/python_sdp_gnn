@@ -195,10 +195,10 @@ def scenario_name(args: argparse.Namespace) -> str:
 
 def validate_cfg_inputs(index_path: Path, edge_vocab: dict[str, int]) -> None:
     index = pd.read_csv(index_path)
-    if (index.empty or "cfg_version" not in index
-            or not index["cfg_version"].eq("v3").all()
+    if (index.empty or "construction" not in index
+            or not index["construction"].eq("exceptional_control_flow").all()
             or edge_vocab != CFG_EDGE_TYPE_TO_ID):
-        raise ValueError("Only canonical CFG v3 inputs are supported. Run scripts/extract_promise_cfg.py.")
+        raise ValueError("Only canonical CFG inputs are supported. Run scripts/extract_promise_cfg.py.")
 
 
 def resolve_path(path: Path) -> Path:
@@ -271,6 +271,7 @@ def choose_validation_project(
 
 def ast_args(args: argparse.Namespace) -> SimpleNamespace:
     return SimpleNamespace(
+        ast_feature_dim=args.ast_feature_dim,
         epochs=args.upstream_epochs,
         batch_size=args.ast_batch_size,
         lr=args.lr,
@@ -356,7 +357,7 @@ def cluster_args(
 def build_ast_model(args: SimpleNamespace, num_node_types: int, device: torch.device) -> tuple[ASTGraphClassifier, ASTEncoderConfig]:
     config = ASTEncoderConfig(
         num_node_types=num_node_types,
-        structural_feature_dim=3,
+        structural_feature_dim=args.ast_feature_dim,
         node_type_embedding_dim=args.node_type_embedding_dim,
         hidden_dim=args.hidden_dim,
         output_dim=args.output_dim,
@@ -634,6 +635,21 @@ def load_ndg_structural_matrices(
     return matrices, feature_names
 
 
+def validate_structural_provenance(ndg_index_path: Path, structural_index_path: Path) -> None:
+    """Do not attach old topology descriptors to the corrected dependency graph."""
+    ndgs = pd.read_csv(ndg_index_path)
+    features = pd.read_csv(structural_index_path)
+    if features.dataset_name.duplicated().any():
+        raise ValueError("Duplicate structural project rows")
+    if "source_graph_sha256" not in features:
+        raise ValueError("Re-extract structural features for the selected NDG")
+    features = features.set_index("dataset_name")
+    for _, row in ndgs.iterrows():
+        digest = hashlib.sha256(Path(row.graph_json).read_bytes()).hexdigest()
+        if row.dataset_name not in features.index or features.loc[row.dataset_name, "source_graph_sha256"] != digest:
+            raise ValueError(f"Stale or mismatched NDG structural features: {row.dataset_name}")
+
+
 def load_base_ndgs(
     index_path: Path,
     num_forward_relations: int,
@@ -644,6 +660,8 @@ def load_base_ndgs(
     missing = sorted(required - set(index.columns))
     if missing:
         raise ValueError(f"NDG index is missing columns: {missing}")
+    if index.empty or "resolution" not in index or not index.resolution.eq("lexical_scope").all():
+        raise ValueError("Scope-aware NDG inputs required. Run scripts/extract_promise_ndg.py.")
     projects: dict[str, BaseNDGProject] = {}
     for _, row in index.iterrows():
         dataset_name = str(row["dataset_name"])
@@ -1002,7 +1020,7 @@ def run_outer_fold(
             "cluster_features": cluster_metadata,
             "scenario": scenario_name(args),
             "fusion": "late",
-            "cfg_version": "v3",
+            "cfg_construction": "exceptional_control_flow",
             "ndg_structural_feature_names": ndg_structural_feature_names,
         },
         fold_dir / "ndg_encoder.pt",
@@ -1129,6 +1147,7 @@ def main() -> None:
     ndg_edge_vocab = {str(key): int(value) for key, value in load_json(resolve_path(args.ndg_edge_vocab)).items()}
     ndg_feature_names = [str(value) for value in load_json(resolve_path(args.ndg_feature_names))]
     if args.ndg_structural_features:
+        validate_structural_provenance(resolve_path(args.ndg_index), resolve_path(args.ndg_structural_index))
         structural_matrices, ndg_structural_feature_names = load_ndg_structural_matrices(
             resolve_path(args.ndg_structural_index),
             resolve_path(args.ndg_structural_feature_names),
@@ -1154,6 +1173,12 @@ def main() -> None:
         raise ValueError(f"Unknown test projects: {unknown}")
 
     ast_index_all, ast_vocab = ast_pipeline.load_inputs(resolve_path(args.ast_index), resolve_path(args.ast_node_vocab))
+    args.ast_feature_dim = int(ast_index_all.feature_dim.iloc[0])
+    representations = {
+        "ast": "syntax_tree",
+        "cfg": "exceptional_control_flow",
+        "ndg": "lexical_scope",
+    }
     ast_fallback_count = int((ast_index_all["parser_mode"].astype(str) == "fallback").sum())
     ast_index = ast_index_all.copy()
     if not args.include_ast_fallbacks:
@@ -1194,10 +1219,11 @@ def main() -> None:
     if args.ndg_structural_features:
         input_paths += [args.ndg_structural_index, args.ndg_structural_feature_names]
     manifest = {
+        "representations": representations,
         "scenario": scenario_name(args),
         "fusion": "late",
         "behavioral_view": "CFG",
-        "cfg_version": "v3",
+        "cfg_construction": "exceptional_control_flow",
         "cluster_mode": args.cluster_mode,
         "ndg_structural_features": args.ndg_structural_features,
         "arguments": {key: str(value) if isinstance(value, Path) else value
@@ -1258,9 +1284,10 @@ def main() -> None:
     np.save(embeddings_path, all_embeddings)
     embedding_index.to_csv(output_dir / "ndg_node_embedding_index.csv", index=False)
     summary = {
+        "representations": representations,
         "protocol": "strict_nested_LOPO",
         "behavioral_view": "CFG",
-        "cfg_version": "v3",
+        "cfg_construction": "exceptional_control_flow",
         "fusion": "late",
         "scenario": scenario_name(args),
         "cluster_mode": args.cluster_mode,

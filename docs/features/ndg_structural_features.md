@@ -69,6 +69,11 @@ not required.
 
 Extract the features after creating the NDGs:
 
+Re-extract whenever NDG topology or node ordering changes. New structural indexes
+store a source-graph fingerprint; the evaluator rejects missing fingerprints and
+mismatches. Use the default NDG paths described in
+[representation improvements](representation_improvements.md).
+
 ```bash
 .venv/bin/python scripts/extract_ndg_structural_features.py
 ```

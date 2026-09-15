@@ -10,7 +10,12 @@ defect probability and final contextual embedding per held-out file node.
 
 Precomputed global or standalone LOPO embeddings are not consumed.
 
-Late fusion and CFG v3 are fixed. Choose `--cluster-mode none|simple|gated`
+AST inputs must use the complete 20-column syntax schema. NDG inputs must use
+scope-aware resolution. Input hashes and representation descriptions are recorded
+in the manifest and summary; alternative extractor implementations are not supported. See
+[representation improvements](../features/representation_improvements.md).
+
+Late fusion and CFG are fixed. Choose `--cluster-mode none|simple|gated`
 (default none), and independently enable `--ndg-structural-features` (default
 off). See [00 — README](../../README.md) for all six scenario commands.
 
@@ -26,8 +31,8 @@ their tensor directories and vocabulary JSON files
 ```
 
 Structural index and feature names are additionally required only when that
-branch is enabled. CFG indexes must carry `cfg_version=v3` and use exactly the
-canonical control-flow vocabulary. Older inputs are rejected.
+branch is enabled. CFG indexes must carry `construction=exceptional_control_flow`
+and use exactly the canonical control-flow vocabulary. Incompatible inputs are rejected.
 
 Keys are joined by `(dataset_name, class name)`. Missing reliable AST or CFG
 views are represented through a mask, not by deleting the NDG node.
@@ -123,7 +128,7 @@ includes cluster mode, active algorithm, and structural-feature on/off.
 Nonempty output directories are rejected. Use `--output-dir` to separate pilots
 or different hyperparameters with the same scenario and seed. The manifest
 records arguments and input-index hashes; summaries and checkpoints identify
-the mode, fixed fusion, and CFG version.
+the mode, fixed fusion, and CFG construction contract.
 
 ## Runtime and Progress
 

@@ -13,12 +13,15 @@ AST classifier prediction.
 
 For a batch of AST graphs:
 
-- `x`: numeric node features with shape `[num_nodes, 3]`.
+- `x`: packed syntax features `[num_nodes, 20]`.
 - `node_type_id`: AST node type IDs with shape `[num_nodes]`.
 - `edge_index`: directed AST child relations with shape `[2, num_edges]`.
 - `batch`: graph assignment for each node with shape `[num_nodes]`.
 
-The three numeric features are depth, out-degree, and `has_identifier`.
+The first three features are depth, out-degree, and `has_identifier`. The current AST
+also provides three categorical IDs (operator, literal, child role), sibling
+positions, and unary-operator counts. IDs are embedded in separate eight-dimensional
+spaces, not used as raw numeric features. The encoder accepts only this schema.
 
 ## Normalization
 
@@ -37,7 +40,7 @@ but should stay enabled in the main pipeline.
 ## Architecture
 
 1. Embed `node_type_id` using a trainable lookup table.
-2. Concatenate node-type embeddings with numeric structural features.
+2. Concatenate node-type and syntax embeddings with numeric features.
 3. Project the combined vector into the hidden dimension.
 4. Apply multiple GIN layers with normalization, activation, dropout, and
    residual behavior.
@@ -56,7 +59,7 @@ Defines vocabulary size, structural feature dimension, node-type embedding
 dimension, hidden/output dimensions, number of layers, dropout, and whether
 normalization is enabled.
 
-### `GraphAttentionPooling`
+### `AttentionPooling`
 
 Computes a learned scalar score for each node, normalizes scores within each
 graph, and forms a weighted graph representation.

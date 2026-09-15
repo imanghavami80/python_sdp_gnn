@@ -108,7 +108,7 @@ def split_train_validation(
 def build_model(args: argparse.Namespace, num_node_types: int, device: torch.device) -> tuple[ASTGraphClassifier, ASTEncoderConfig]:
     config = ASTEncoderConfig(
         num_node_types=num_node_types,
-        structural_feature_dim=3,
+        structural_feature_dim=args.ast_feature_dim,
         node_type_embedding_dim=args.node_type_embedding_dim,
         hidden_dim=args.hidden_dim,
         output_dim=args.output_dim,
@@ -243,6 +243,7 @@ def main() -> None:
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     graph_index, vocab = load_inputs(resolve_path(args.graph_index), resolve_path(args.node_type_vocab))
+    args.ast_feature_dim = int(graph_index.feature_dim.iloc[0])
     device = choose_device(args.device)
     print(f"AST LOPO started: graphs={len(graph_index)} projects={graph_index['dataset_name'].nunique()} device={device}")
     run_lopo(graph_index, vocab, output_dir, args, device)

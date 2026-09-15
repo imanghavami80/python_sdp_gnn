@@ -44,6 +44,13 @@ Java source is parsed structurally. Type resolution uses package declarations,
 explicit imports, wildcard imports, and project types. Ambiguous simple names
 are not assigned arbitrarily.
 
+The scope-aware implementation indexes project declarations and walks lexical
+scopes. It handles field shadowing, block lifetimes, explicit `this`, field
+chains, and unambiguous declared return types. Unresolved calls/types are recorded
+in graph JSON instead of guessed. This is bounded source analysis, not full Java
+compiler binding; see [representation improvements](../features/representation_improvements.md)
+for supported cases and limitations. Graph indexes record `resolution=lexical_scope`.
+
 Multiple relation types may connect the same pair of nodes. Edge type IDs are
 categorical relations, not continuous edge feature vectors.
 

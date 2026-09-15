@@ -28,15 +28,13 @@ try:
     from torch_geometric.loader import DataLoader
 
     from thesis_project.models import ASTEncoderConfig, ASTGINEncoder, ASTGraphClassifier, normalize_ast_structural_features
+    from thesis_project.features.ast_schema import FEATURE_NAMES as SYNTAX_FEATURE_NAMES
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only in missing dependency environments.
     raise SystemExit(
         "Missing GNN dependencies. Install them with:\n"
         "  .venv/bin/pip install -r requirements.txt\n"
         f"Original error: {exc}"
     ) from exc
-
-STRUCTURAL_FEATURE_NAMES = ["depth", "out_degree", "has_identifier"]
-
 
 class ASTGraphDataset:
     """Lazy dataset for AST tensor files listed in `graph_index.csv`."""
@@ -132,7 +130,7 @@ def load_inputs(graph_index_path: Path, vocab_path: Path) -> tuple[pd.DataFrame,
         raise FileNotFoundError(f"Missing AST node type vocabulary: {vocab_path}. Run scripts/extract_promise_ast.py first.")
 
     graph_index = pd.read_csv(graph_index_path)
-    required = {"graph_id", "dataset_name", "name", "source_path", "label", "x_npy", "node_type_id_npy", "edge_index_npy"}
+    required = {"graph_id", "dataset_name", "name", "source_path", "label", "feature_dim", "x_npy", "node_type_id_npy", "edge_index_npy"}
     missing = sorted(required - set(graph_index.columns))
     if missing:
         raise ValueError(f"AST graph index is missing required columns: {missing}")
@@ -144,6 +142,12 @@ def load_inputs(graph_index_path: Path, vocab_path: Path) -> tuple[pd.DataFrame,
         raise ValueError(f"AST labels must be binary, found: {sorted(labels)}")
 
     vocab = json.loads(vocab_path.read_text(encoding="utf-8"))
+    from thesis_project.features.ast_schema import FEATURE_DIM, NODE_TYPES
+    dims = set(graph_index["feature_dim"].astype(int))
+    if dims != {FEATURE_DIM}:
+        raise ValueError("Unsupported AST features. Run scripts/extract_promise_ast.py.")
+    if vocab != {name: i for i, name in enumerate(NODE_TYPES)}:
+        raise ValueError("AST node vocabulary does not match the encoder")
     return graph_index.reset_index(drop=True), {str(key): int(value) for key, value in vocab.items()}
 
 
@@ -382,7 +386,7 @@ def save_outputs(
         "num_graphs": int(embeddings.shape[0]),
         "embedding_dim": int(embeddings.shape[1]),
         "num_node_types": int(len(vocab)),
-        "structural_feature_names": STRUCTURAL_FEATURE_NAMES,
+        "structural_feature_names": SYNTAX_FEATURE_NAMES,
         "structural_feature_transform": {
             "enabled": not args.no_normalize_structural_features,
             "depth": "depth / max_depth_in_graph",
@@ -421,7 +425,7 @@ def main() -> None:
 
     encoder_config = ASTEncoderConfig(
         num_node_types=len(vocab),
-        structural_feature_dim=3,
+        structural_feature_dim=int(graph_index.feature_dim.iloc[0]),
         node_type_embedding_dim=args.node_type_embedding_dim,
         hidden_dim=args.hidden_dim,
         output_dim=args.output_dim,

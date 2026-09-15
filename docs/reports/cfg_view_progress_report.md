@@ -2,7 +2,7 @@
 
 Historical report: measurements below describe experiments completed before the
 scenario cleanup. Their generated graphs, predictions, and checkpoints were
-deleted with `outputs/` at the user's request. Only CFG v3 and late fusion are
+deleted with `outputs/` at the user's request. Only CFG and late fusion are
 active now; clustering (none/simple/gated) and NDG structural features (off/on)
 are independent scenario choices. Tables are preserved as historical records,
 not new evaluation results.
@@ -23,8 +23,8 @@ versions were examined:
 1. the original CFG;
 2. CFG enriched with def-use edges;
 3. a PDG experiment;
-4. a redesigned, exception-aware CFG (CFG v2); and
-5. the same rigorous CFG with improved bytecode coverage (CFG v3).
+4. a redesigned, exception-aware CFG (CFG before bytecode recovery); and
+5. the same rigorous CFG with improved bytecode coverage (CFG).
 
 All completed prediction experiments used the same strict nested
 Leave-One-Project-Out protocol, late fusion, gated k-means++ features, random
@@ -39,8 +39,8 @@ file remains in the AST, metrics, and NDG views.
 | Original CFG | 4,945 / 5,303 reported | Not reliably measurable from that saved run | The extractor counted compiler-error stubs as successes, while Log4j coverage was 0 / 194. This value is not comparable with later verified counts. |
 | CFG + def-use | 3,870 / 5,303 | 72.98% | First strict and credible coverage baseline; Log4j was repaired to 178 / 194. |
 | PDG | 3,870 / 5,303 | 72.98% | Built from the same valid method bodies, so coverage was unchanged. |
-| CFG v2 | 4,046 / 5,303 | 76.30% | Complete-project compilation recovered 176 additional valid files. |
-| CFG v3 | 4,573 / 5,303 | 86.23% | Exact official release bytecode recovered another 527 valid files. |
+| CFG before bytecode recovery | 4,046 / 5,303 | 76.30% | Complete-project compilation recovered 176 additional valid files. |
+| CFG | 4,573 / 5,303 | 86.23% | Exact official release bytecode recovered another 527 valid files. |
 
 The table does not indicate that valid coverage decreased. The original 93.25%
 was a mixture of real graphs and false successes and must not be used as the
@@ -154,13 +154,13 @@ G-Mean **0.2963**, ROC-AUC **0.6946**, PR-AUC **0.5852**, and Brier score
 implementation was therefore removed from the active pipeline, while its saved
 experiment measurements are recorded here as a negative ablation.
 
-## 4. Canonical Exception-Aware CFG (CFG v2)
+## 4. Canonical Exception-Aware CFG (CFG before bytecode recovery)
 
 ### Redesign
 
 After the PDG experiment, the behavioral view was simplified back to one
 logically well-defined CFG. Def-use and PDG relations were removed from the
-active model. CFG v2 retained only control-flow semantics and introduced 11
+active model. CFG before bytecode recovery retained only control-flow semantics and introduced 11
 precise edge types:
 
 `CFG_ENTRY`, `CFG_FALLTHROUGH`, `CFG_BRANCH_TRUE`, `CFG_BRANCH_FALSE`,
@@ -186,21 +186,21 @@ The important correctness improvements were:
 
 ### Coverage
 
-CFG v2 produced **4,046 / 5,303** validated graphs, an increase of 176 over the
+CFG before bytecode recovery produced **4,046 / 5,303** validated graphs, an increase of 176 over the
 strict CFG + def-use/PDG extraction. It retained **178 / 194** Log4j graphs and
 reported zero graph-validation errors. Its largest remaining coverage gaps were
 Camel (384 / 935), Synapse (121 / 256), and Xerces (339 / 543).
 
 ### Prediction outcome
 
-CFG v2 achieved F1 **0.5134**, close to the original result of 0.5160, while
+CFG before bytecode recovery achieved F1 **0.5134**, close to the original result of 0.5160, while
 balanced accuracy improved from 0.5580 to **0.5692** and G-Mean from 0.3818 to
 **0.4237**. MCC was **0.1129**, ROC-AUC **0.6830**, PR-AUC **0.5707**, and Brier
-score **0.2754**. Thus, v2 was not the best single-seed result on every metric,
+score **0.2754**. Thus, the pre-recovery CFG was not the best single-seed result on every metric,
 but it was the most defensible representation: simpler than PDG, semantically
 precise, validated, and aligned with the thesis.
 
-## 5. Coverage-Improved Canonical CFG (CFG v3)
+## 5. Coverage-Improved Canonical CFG (CFG)
 
 ### Motivation and implementation
 
@@ -210,8 +210,8 @@ recover additional valid methods. Accepting ECJ error stubs or constructing an
 approximate source graph would have inflated coverage without recovering real
 behavior.
 
-CFG v3 therefore keeps **the same node/edge schema, 11 relation types, feature
-definitions, and GATv2 encoder as CFG v2**. The only controlled change is
+CFG therefore keeps **the same node/edge schema, 11 relation types, feature
+definitions, and GATv2 encoder as CFG before bytecode recovery**. The only controlled change is
 bytecode recovery:
 
 - for Camel 1.6 and Synapse 1.2, the extractor obtains bytecode from the matching
@@ -232,7 +232,7 @@ second parser or fabricate control flow.
 
 ### Coverage improvement
 
-CFG v3 produced **4,573 / 5,303** validated graphs with zero validation errors:
+CFG produced **4,573 / 5,303** validated graphs with zero validation errors:
 
 - total credible coverage increased from 76.30% to **86.23%**;
 - Camel increased from 384 to **804 / 935**;
@@ -246,15 +246,15 @@ so generating behavioral CFGs for them would be conceptually incorrect. Many
 other remaining placeholders are likewise interfaces, annotations, or files
 without recoverable executable code.
 
-The final v3 corpus contains 898,127 nodes, 1,753,339 typed control-flow edges,
+The final current CFG corpus contains 898,127 nodes, 1,753,339 typed control-flow edges,
 and 50,842 methods.
 
 ### Prediction experiment result
 
-The CFG-v3 experiment completed all 12 held-out-project folds and evaluated all
+The CFG-current CFG experiment completed all 12 held-out-project folds and evaluated all
 5,303 mapped files. It achieved macro-project recall **0.8480**, F1 **0.5183**,
 ROC-AUC **0.6936**, PR-AUC **0.5777**, and Brier score **0.2465**. The result is
-mixed: v3 improved ranking and calibration over v2 and produced slightly higher
+mixed: current CFG improved ranking and calibration over the pre-recovery CFG and produced slightly higher
 F1, but its balanced accuracy, MCC, and G-Mean decreased. The model favored
 sensitivity: its mean recall was high, while the specificity implied by mean
 recall and balanced accuracy was only approximately 0.2173.
@@ -265,7 +265,7 @@ The following values are unweighted means and standard deviations across the 12
 held-out projects. Bold values are the best mean in each row. Brier score is the
 only metric for which lower is better.
 
-| Metric | Original CFG | CFG + def-use | PDG | CFG v2 | CFG v3 |
+| Metric | Original CFG | CFG + def-use | PDG | CFG before bytecode recovery | CFG |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Accuracy | **0.5530 ± 0.2506** | 0.5087 ± 0.2111 | 0.4633 ± 0.2107 | 0.5198 ± 0.1951 | 0.5428 ± 0.2401 |
 | Balanced accuracy | 0.5580 ± 0.0726 | 0.5638 ± 0.1126 | 0.5490 ± 0.0889 | **0.5692 ± 0.1030** | 0.5326 ± 0.1031 |
@@ -278,12 +278,12 @@ only metric for which lower is better.
 | PR-AUC | 0.5838 ± 0.2749 | **0.5882 ± 0.2731** | 0.5852 ± 0.2711 | 0.5707 ± 0.2768 | 0.5777 ± 0.2827 |
 | Brier score ↓ | 0.2602 ± 0.1155 | 0.2886 ± 0.0999 | 0.3025 ± 0.1068 | 0.2754 ± 0.0941 | **0.2465 ± 0.0937** |
 
-### Focused comparison: CFG v3 versus CFG v2
+### Focused comparison: CFG versus CFG before bytecode recovery
 
 This is the cleanest comparison because both versions use the same CFG schema
-and encoder. The change is the higher valid bytecode coverage in v3.
+and encoder. The change is the higher valid bytecode coverage in current CFG.
 
-| Metric | v3 − v2 mean | Projects better/tied/worse with v3 | Paired Wilcoxon p-value |
+| Metric | current CFG − the pre-recovery CFG mean | Projects better/tied/worse with current CFG | Paired Wilcoxon p-value |
 | --- | ---: | ---: | ---: |
 | Accuracy | +0.0230 | 8 / 0 / 4 | 0.5186 |
 | Balanced accuracy | −0.0366 | 4 / 0 / 8 | 0.1514 |
@@ -296,7 +296,7 @@ and encoder. The change is the higher valid bytecode coverage in v3.
 | PR-AUC | +0.0070 | 7 / 0 / 5 | 0.7334 |
 | Brier score ↓ | −0.0288 | 8 / 0 / 4 | 0.4697 |
 
-The paired tests are exploratory and uncorrected. None of the v3-versus-v2
+The paired tests are exploratory and uncorrected. None of the current CFG-versus-the pre-recovery CFG
 differences reached p < 0.05. With only one training seed and 12 heterogeneous
 projects, they should not be interpreted as proof of superiority or equivalence.
 
@@ -306,17 +306,17 @@ No version dominates every metric. The original CFG has the highest accuracy,
 precision, and MCC, but its extraction coverage was contaminated by invalid
 compiler stubs, so it is not an acceptable final implementation. CFG + def-use
 has the highest ROC-AUC and PR-AUC, but lower F1, MCC, and calibration quality.
-The PDG adds substantial complexity without a convincing benefit. CFG v2 gives
+The PDG adds substantial complexity without a convincing benefit. CFG before bytecode recovery gives
 the best balanced accuracy and G-Mean and remains the strongest threshold-based
 balanced classifier in this single run.
 
-CFG v3 is best in recall, F1, and Brier score and provides by far the strongest
-verified extraction coverage. Relative to v2, it improves accuracy, recall, F1,
+CFG is best in recall, F1, and Brier score and provides by far the strongest
+verified extraction coverage. Relative to the pre-recovery CFG, it improves accuracy, recall, F1,
 ROC-AUC, PR-AUC, and calibration, but reduces balanced accuracy, precision, MCC,
 and G-Mean. Therefore, higher coverage improved several aspects of the model but
 did **not** produce a universal predictive improvement.
 
-CFG v3 should remain the current behavioral representation because it is the
+CFG should remain the current behavioral representation because it is the
 most complete semantically valid CFG and does not add PDG complexity. However,
 the modeling or validation-threshold behavior should be investigated before
 claiming it is the best predictor. The next evidence should come from multiple

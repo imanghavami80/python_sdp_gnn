@@ -59,7 +59,7 @@ CSVs for diagnostics.
 
 ## Integration modes
 
-The three modes use fixed late fusion and CFG v3. In `none`, no clusterer is
+The three modes use fixed late fusion and CFG. In `none`, no clusterer is
 fitted. In `simple`, metrics and cluster features are directly concatenated
 inside the encoder before a joint projection. In `gated`, separate projections
 are combined through the residual gate below. Both active modes use the same

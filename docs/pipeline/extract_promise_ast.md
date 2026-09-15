@@ -4,9 +4,9 @@
 
 ## Purpose
 
-This stage converts each mapped Java source file into one filtered Abstract
-Syntax Tree graph. The graph preserves useful syntax while avoiding a large,
-sparse representation of every parser detail.
+This stage converts each mapped Java source file into one AST graph.
+It retains parser nodes and parent attribute roles, operators, literal categories,
+and sibling order using compact features and small vocabularies.
 
 ## Prerequisite
 
@@ -28,6 +28,9 @@ Node data:
 - `x[:, 0]`: AST depth.
 - `x[:, 1]`: node out-degree.
 - `x[:, 2]`: whether the node has an identifier.
+- `x[:, 3:6]`: categorical operator, literal, and incoming child-role IDs.
+- `x[:, 6:8]`: log and relative sibling positions within the parent attribute.
+- `x[:, 8:20]`: prefix/postfix unary-operator log counts.
 
 Edges are directed parent-to-child AST relations. `edge_index` has shape
 `[2, num_edges]`.
@@ -40,7 +43,7 @@ out-degree receives `log1p`; `has_identifier` remains binary.
 
 1. Load and validate mapped rows.
 2. Parse each source file using `javalang`.
-3. Retain the configured syntax node types.
+3. Retain parser nodes and explicit initializer blocks.
 4. Build parent-child edges and structural node features.
 5. Validate node and edge dimensions.
 6. Save a readable JSON graph and NumPy tensors.
@@ -76,6 +79,7 @@ The default behavior cleans graph and tensor output directories. Use
 ```text
 outputs/promise/ast/graph_index.csv
 outputs/promise/ast/node_type_vocab.json
+outputs/promise/ast/syntax_schema.json
 outputs/promise/ast/ast_summary.json
 outputs/promise/ast/parse_failures.json
 outputs/promise/ast/graphs/<file>.json
@@ -96,3 +100,8 @@ outputs/promise/ast/tensors/<file>_edge_index.npy
 The AST graph index is consumed by the AST encoder workflows and by the strict
 nested NDG evaluator, which trains an AST encoder separately inside each outer
 LOPO fold.
+
+The model requires the 20-column schema and matching node vocabulary. It embeds
+categorical IDs separately; they are not scaled as ordinal values. Incomplete
+three-column artifacts must be re-extracted. See
+[representation improvements](../features/representation_improvements.md).

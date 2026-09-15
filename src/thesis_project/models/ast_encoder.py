@@ -9,12 +9,13 @@ from torch import Tensor, nn
 from torch_geometric.nn import GINConv, global_add_pool
 from torch_geometric.utils import coalesce
 from torch_geometric.utils import softmax
+from thesis_project.features.ast_schema import FEATURE_DIM, CATEGORY_SIZES
 
 
 def normalize_ast_structural_features(x: Tensor) -> Tensor:
     """Scale depth per graph, log-transform degree, and clamp the binary flag."""
-    if x.dim() != 2 or x.size(-1) != 3:
-        raise ValueError(f"Expected x with shape [num_nodes, 3], received {tuple(x.shape)}")
+    if x.dim() != 2 or x.size(-1) != FEATURE_DIM:
+        raise ValueError(f"Expected {FEATURE_DIM} AST features, received {tuple(x.shape)}")
     if x.size(0) == 0:
         return x.float()
 
@@ -31,7 +32,7 @@ class ASTEncoderConfig:
     """Configuration for :class:`ASTGINEncoder`."""
 
     num_node_types: int
-    structural_feature_dim: int = 3
+    structural_feature_dim: int = FEATURE_DIM
     node_type_embedding_dim: int = 32
     hidden_dim: int = 128
     output_dim: int = 128
@@ -43,8 +44,8 @@ class ASTEncoderConfig:
     def __post_init__(self) -> None:
         if self.num_node_types <= 0:
             raise ValueError("num_node_types must be positive")
-        if self.structural_feature_dim <= 0:
-            raise ValueError("structural_feature_dim must be positive")
+        if self.structural_feature_dim != FEATURE_DIM:
+            raise ValueError(f"AST requires {FEATURE_DIM} structural features")
         if self.node_type_embedding_dim <= 0:
             raise ValueError("node_type_embedding_dim must be positive")
         if self.hidden_dim <= 0:
@@ -83,8 +84,10 @@ class ASTGINEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.node_type_embedding = nn.Embedding(config.num_node_types, config.node_type_embedding_dim)
-
-        input_dim = config.node_type_embedding_dim + config.structural_feature_dim
+        self.syntax_embeddings = nn.ModuleList(
+            [nn.Embedding(size, 8) for size in CATEGORY_SIZES]
+        )
+        input_dim = config.node_type_embedding_dim + FEATURE_DIM + 3 * 8 - 3
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, config.hidden_dim),
             nn.ReLU(),
@@ -134,7 +137,14 @@ class ASTGINEncoder(nn.Module):
             raise ValueError("x and node_type_id must describe the same number of nodes")
 
         type_embedding = self.node_type_embedding(node_type_id.long())
-        return torch.cat([type_embedding, x.float()], dim=-1)
+        ids = x[:, 3:6]
+        if not torch.isfinite(ids).all() or not torch.equal(ids, ids.round()):
+            raise ValueError("AST syntax IDs must be finite integers")
+        for i, size in enumerate(CATEGORY_SIZES):
+            if ids[:, i].numel() and (ids[:, i].min() < 0 or ids[:, i].max() >= size):
+                raise ValueError("AST syntax ID outside vocabulary")
+        syntax = [emb(ids[:, i].long()) for i, emb in enumerate(self.syntax_embeddings)]
+        return torch.cat([type_embedding, x[:, :3], x[:, 6:], *syntax], dim=-1)
 
     def encode_nodes(self, x: Tensor, node_type_id: Tensor, edge_index: Tensor) -> Tensor:
         """Return contextual node embeddings before graph-level pooling."""

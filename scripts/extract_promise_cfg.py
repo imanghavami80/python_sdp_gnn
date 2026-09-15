@@ -894,7 +894,7 @@ def write_graph_outputs(
         "source_path": source_path,
         "label": label,
         "extraction_mode": extraction_mode,
-        "cfg_version": "v3",
+        "construction": "exceptional_control_flow",
         "num_nodes": int(graph["num_nodes"]),
         "num_edges": int(graph["num_edges"]),
         "num_methods": int(len(graph["methods"])),
@@ -1146,7 +1146,7 @@ def main() -> None:
         "edge_type_vocab_size": len(EDGE_TYPE_TO_ID),
         "backend": "soot",
         "graph_view": "cfg",
-        "cfg_version": "v3",
+        "construction": "exceptional_control_flow",
         "official_release_cache_dir": str(release_cache_dir),
         "datasets": dataset_summaries,
     }

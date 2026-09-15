@@ -1,6 +1,6 @@
 # 00 — Multi-View Software Defect Prediction
 
-The model predicts defects for Java files using software metrics, AST, CFG v3,
+The model predicts defects for Java files using software metrics, AST, CFG,
 and a project-level Network Dependency Graph (NDG). Late fusion is always used:
 the NDG GNN first processes metric-based file states and dependencies, and its
 embeddings are then fused with independently learned AST and CFG embeddings.
@@ -20,10 +20,15 @@ pytest
 Inputs are PROMISE CSVs and Java source trees under `projects_new/`.
 The preprocessing script discovers the benchmark projects and maps qualified
 class names to source files. `outputs/` contains generated data only and is
-excluded from Git. The cleanup removed the previous artifacts; rebuild them
-using the commands below. Verified CFG release JARs in `build/` remain cached.
+excluded from Git. Rebuild inputs using the commands below when extraction changes.
+Verified CFG release JARs in `build/` remain cached.
 
 ## Rebuild the data
+
+There is one AST, CFG, and NDG implementation. AST preserves syntax information;
+NDG uses scope-aware dependency resolution. See
+[22 — Representation improvements](docs/features/representation_improvements.md).
+The commands below generate these representations at the default paths.
 
 Run these from the repository root in order:
 
@@ -34,7 +39,7 @@ python scripts/extract_promise_cfg.py
 python scripts/extract_promise_ndg.py
 ```
 
-CFG v3 is the only behavioral extractor. It uses Soot exceptional control flow,
+CFG is the only behavioral extractor. It uses Soot exceptional control flow,
 rejects compiler-error method bodies, and uses checksum-verified exact-release
 bytecode for configured Camel/Synapse versions. Missing executable CFGs remain
 masked views; their file nodes are retained. There is no CFG/PDG selector.
@@ -68,7 +73,7 @@ NDG message passing, before fusion with AST and CFG. They can accompany any
 clustering mode. The late-fusion gate exists in every scenario; “gated cluster”
 refers specifically to the additional cluster gate.
 
-All six scenarios use CFG v3 and late fusion:
+All six scenarios use CFG and late fusion:
 
 ```bash
 # 1. Baseline
@@ -109,7 +114,7 @@ outputs/promise/experiments/cluster_gated_kmeans__ndg_structural_on/seed_42/
 
 Each contains `run_manifest.json`, `nested_lopo_summary.json`,
 `fold_metrics.csv`, `all_test_node_predictions.csv`, embeddings, and fold
-checkpoints. The manifest records arguments and input-index hashes. CFG v3
+checkpoints. The manifest records arguments and input-index hashes. CFG
 markers and the exact control-flow vocabulary are checked before evaluation.
 
 Existing nonempty experiment directories are rejected. For a pilot, changed

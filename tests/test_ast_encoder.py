@@ -5,6 +5,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("torch_geometric")
 
 from thesis_project.models import ASTEncoderConfig, ASTGINEncoder, normalize_ast_structural_features
+from thesis_project.features.ast_schema import FEATURE_DIM
 
 
 def test_ast_structural_feature_normalization():
@@ -17,6 +18,7 @@ def test_ast_structural_feature_normalization():
         dtype=torch.float32,
     )
 
+    x = torch.nn.functional.pad(x, (0, FEATURE_DIM - 3))
     normalized = normalize_ast_structural_features(x)
 
     assert torch.allclose(normalized[:, 0], torch.tensor([0.0, 0.5, 1.0]))
@@ -27,7 +29,7 @@ def test_ast_structural_feature_normalization():
 def test_ast_gin_encoder_returns_graph_embeddings():
     config = ASTEncoderConfig(
         num_node_types=8,
-        structural_feature_dim=3,
+        structural_feature_dim=FEATURE_DIM,
         node_type_embedding_dim=4,
         hidden_dim=16,
         output_dim=12,
@@ -46,6 +48,7 @@ def test_ast_gin_encoder_returns_graph_embeddings():
         ],
         dtype=torch.float32,
     )
+    x = torch.nn.functional.pad(x, (0, FEATURE_DIM - 3))
     node_type_id = torch.tensor([0, 1, 2, 0, 3], dtype=torch.long)
     edge_index = torch.tensor([[0, 0, 3], [1, 2, 4]], dtype=torch.long)
     batch = torch.tensor([0, 0, 0, 1, 1], dtype=torch.long)
@@ -58,3 +61,10 @@ def test_ast_gin_encoder_returns_graph_embeddings():
     assert torch.isfinite(attention).all()
     assert torch.allclose(attention[batch == 0].sum(), torch.tensor(1.0), atol=1e-6)
     assert torch.allclose(attention[batch == 1].sum(), torch.tensor(1.0), atol=1e-6)
+
+
+def test_incomplete_ast_features_are_rejected():
+    with pytest.raises(ValueError, match="AST requires"):
+        ASTEncoderConfig(num_node_types=8, structural_feature_dim=3)
+    with pytest.raises(ValueError, match="AST features"):
+        normalize_ast_structural_features(torch.zeros(2, 3))

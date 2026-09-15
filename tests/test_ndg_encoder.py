@@ -297,14 +297,14 @@ def test_existing_results_are_not_overwritten(tmp_path: Path) -> None:
     assert artifact.read_text() == "keep"
 
 
-def test_cfg_version_and_exact_relations_are_required(tmp_path: Path) -> None:
+def test_cfg_construction_and_exact_relations_are_required(tmp_path: Path) -> None:
     index = tmp_path / "graph_index.csv"
-    pd.DataFrame({"cfg_version": ["v3"]}).to_csv(index, index=False)
+    pd.DataFrame({"construction": ["exceptional_control_flow"]}).to_csv(index, index=False)
     validate_cfg_inputs(index, EDGE_TYPE_TO_ID)
-    with pytest.raises(ValueError, match="CFG v3"):
+    with pytest.raises(ValueError, match="CFG"):
         validate_cfg_inputs(index, {**EDGE_TYPE_TO_ID, "DATA_DEPENDENCE": 99})
-    pd.DataFrame({"cfg_version": ["v2"]}).to_csv(index, index=False)
-    with pytest.raises(ValueError, match="CFG v3"):
+    pd.DataFrame({"construction": ["unsupported"]}).to_csv(index, index=False)
+    with pytest.raises(ValueError, match="CFG"):
         validate_cfg_inputs(index, EDGE_TYPE_TO_ID)
 
 
@@ -372,4 +372,4 @@ def test_nested_fold_feature_integration_and_saved_scenario(
     checkpoint = torch.load(tmp_path / "folds/test/ndg_encoder.pt", weights_only=False)
     assert checkpoint["encoder_config"]["cluster_mode"] == mode
     assert checkpoint["encoder_config"]["ndg_structural_dim"] == (6 if structural else 0)
-    assert checkpoint["fusion"] == "late" and checkpoint["cfg_version"] == "v3"
+    assert checkpoint["fusion"] == "late" and checkpoint["cfg_construction"] == "exceptional_control_flow"

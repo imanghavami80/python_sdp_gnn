@@ -19,6 +19,12 @@ python -m compileall -q src scripts tests
 
 ## Test Files
 
+### `tests/test_representation_extraction.py`
+
+Uses small Java programs to test NDG lexical scope, unknown shadowing, chained
+receivers, ambiguity, and AST syntax distinctions, including their passage into
+the GIN model and gradients.
+
 ### `tests/test_preprocess_promise.py`
 
 Checks strict source mapping behavior, including rejection of packaged
@@ -86,7 +92,7 @@ type inspection. Warnings are not test failures, but dependency compatibility
 should be reviewed before upgrading to a Python version where the deprecated
 behavior is removed.
 
-Tests also verify rejection of old CFG versions/relations, removed fusion flags,
+Tests also verify rejection of incompatible CFG construction/relations, removed fusion flags,
 nonempty output protection, and disabled structural tensors after graph merging.
 Small integration tests exercise feature fitting, selection, final retraining,
 and saved predictions/checkpoints for all six scenarios, using fixed upstream
