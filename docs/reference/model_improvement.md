@@ -1,15 +1,15 @@
 # 18 — Model Improvement Strategy
 
 The active model always uses AST, CFG, relational NDG message passing, and
-late fusion. The supported scenario factors are cluster mode (none/simple/gated)
+late fusion. The supported scenario factors are cluster mode (none/simple)
 and handcrafted NDG structural features (off/on).
 
 ## Controlled evaluation
 
 Start with the baseline: neither clustering nor handcrafted NDG features.
-Then compare simple and gated clustering using the same clustering algorithm
+Then compare simple clustering against the baseline using a fixed clustering algorithm
 (default k-means++), feature construction, graph artifacts, and seeds. Repeat
-the three modes with NDG structural features enabled. These six scenarios
+both modes with NDG structural features enabled. These four scenarios
 separate cluster integration from topology-feature augmentation.
 
 Use macro-project PR-AUC and ROC-AUC for ranking, MCC/balanced accuracy/F1 for

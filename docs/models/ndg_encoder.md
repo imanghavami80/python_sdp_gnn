@@ -20,12 +20,9 @@ view is required; unavailable AST and CFG views are masked.
 | --- | --- |
 | `none` | projection of metrics |
 | `simple` | projection of concatenated metrics and cluster features |
-| `gated` | LayerNorm(metric projection + learned gate × cluster projection) |
 
-The simple and gated modes receive the same cluster feature vector. Their
-`cluster_dim` must be positive; none requires zero. The cluster gate is a
-sigmoid with final bias initialized to -2. No cluster gate exists in simple
-mode. The tensor `metrics_x` remains the original 20 metrics in every mode.
+The simple mode requires a positive `cluster_dim`; none requires zero.
+The tensor `metrics_x` remains the original 20 metrics in either mode.
 
 ## Relational NDG encoding
 
@@ -53,7 +50,7 @@ embedding. No project-level pooling is used.
 ## Diagnostics
 
 Attention output includes `ndg_embeddings`, `view_weights`,
-`edge_attention`, `cluster_gate`, and `ndg_structural_gate`.
+`edge_attention`, and `ndg_structural_gate`.
 Disabled gates return zeros internally; prediction CSVs use missing values for
 gates that do not exist in the scenario. Gate values are not causal feature
 importance.

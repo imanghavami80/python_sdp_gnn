@@ -3,13 +3,12 @@
 Historical report: measurements below describe experiments completed before the
 scenario cleanup. Their generated graphs, predictions, and checkpoints were
 deleted with `outputs/` at the user's request. Only CFG and late fusion are
-active now; clustering (none/simple/gated) and NDG structural features (off/on)
+active now; clustering (none/simple) and NDG structural features (off/on)
 are independent scenario choices. Tables are preserved as historical records,
 not new evaluation results.
 
 **Thesis context:** Multi-view cross-project software defect prediction using
-software metrics, AST, a behavioral graph, project-level NDG message passing,
-and gated clustering features.
+software metrics, AST, a behavioral graph, and project-level NDG message passing.
 
 **Report date:** 10 September 2026
 
@@ -27,7 +26,7 @@ versions were examined:
 5. the same rigorous CFG with improved bytecode coverage (CFG).
 
 All completed prediction experiments used the same strict nested
-Leave-One-Project-Out protocol, late fusion, gated k-means++ features, random
+Leave-One-Project-Out protocol, late fusion, a retired experimental configuration, random
 seed 42, and all 5,303 mapped files. A missing behavioral graph is represented
 by a tagged placeholder and masked from the behavioral view; the corresponding
 file remains in the AST, metrics, and NDG views.

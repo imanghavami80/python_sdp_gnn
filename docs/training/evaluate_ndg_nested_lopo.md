@@ -15,9 +15,9 @@ scope-aware resolution. Input hashes and representation descriptions are recorde
 in the manifest and summary; alternative extractor implementations are not supported. See
 [representation improvements](../features/representation_improvements.md).
 
-Late fusion and CFG are fixed. Choose `--cluster-mode none|simple|gated`
+Late fusion and CFG are fixed. Choose `--cluster-mode none|simple`
 (default none), and independently enable `--ndg-structural-features` (default
-off). See [00 — README](../../README.md) for all six scenario commands.
+off). See [00 — README](../../README.md) for all four scenario commands.
 
 ## Inputs
 
@@ -176,8 +176,7 @@ folds/<test-project>/test_node_predictions.csv
 ```
 
 Enabled clustering additionally writes `folds/<project>/cluster_features.json`.
-CSV gate diagnostics are missing for absent gates (including the cluster gate
-in simple mode). No learned cluster-gate effect is implied in simple mode.
+CSV structural-gate diagnostics are missing when structural features are disabled.
 
 ## Metrics
 

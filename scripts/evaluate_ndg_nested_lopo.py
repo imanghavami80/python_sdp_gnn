@@ -112,9 +112,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--attention-dropout", type=float, default=0.15)
     parser.add_argument(
         "--cluster-mode",
-        choices=["none", "simple", "gated"],
+        choices=["none", "simple"],
         default="none",
-        help="No clustering, direct metric/cluster concatenation, or gated cluster residual.",
+        help="No clustering or direct metric/cluster concatenation.",
     )
     parser.add_argument(
         "--ndg-structural-features",
@@ -945,11 +945,6 @@ def run_outer_fold(
     device_test_graph = test_graph.to(device)
     embeddings, probabilities, labels = evaluate(final_ndg, device_test_graph)
     attention_diagnostics = evaluate_attention(final_ndg, device_test_graph)
-    test_cluster_gate = (
-        attention_diagnostics["cluster_gate"].reshape(-1).astype(np.float32)
-        if args.cluster_mode == "gated"
-        else np.full(test_graph.num_nodes, np.nan, dtype=np.float32)
-    )
     test_ndg_structural_gate = (
         attention_diagnostics["ndg_structural_gate"].reshape(-1).astype(np.float32)
         if args.ndg_structural_features
@@ -1045,7 +1040,6 @@ def run_outer_fold(
             "cluster_confidence": test_cluster_confidence,
             "cluster_outlier_distance": test_cluster_outlier_distance,
             "cluster_defect_risk": test_cluster_defect_risk,
-            "cluster_gate": test_cluster_gate,
             "ndg_structural_gate": test_ndg_structural_gate,
         }
     )
@@ -1066,8 +1060,6 @@ def run_outer_fold(
         "scenario": scenario_name(args),
         "hdbscan_min_cluster_size": selected_hdbscan_min_cluster_size,
         "cluster_feature_dim": cluster_dim,
-        "cluster_gate_mean": float(np.nanmean(test_cluster_gate)) if args.cluster_mode == "gated" else None,
-        "cluster_gate_std": float(np.nanstd(test_cluster_gate)) if args.cluster_mode == "gated" else None,
         "ndg_structural_feature_dim": fold_ndg_config.ndg_structural_dim,
         "ndg_structural_gate_mean": (
             float(np.nanmean(test_ndg_structural_gate))
@@ -1138,7 +1130,7 @@ def main() -> None:
         if args.cluster_method == "hdbscan" and args.cluster_count is not None:
             raise ValueError("--cluster-count is not available with --cluster-method hdbscan")
     elif args.cluster_count is not None:
-        raise ValueError("--cluster-count requires --cluster-mode simple or gated")
+        raise ValueError("--cluster-count requires --cluster-mode simple")
     output_dir = resolve_path(args.output_dir or (
         Path("outputs/promise/experiments") / scenario_name(args) / f"seed_{args.seed}"
     ))

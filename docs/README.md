@@ -6,7 +6,7 @@ the core pipeline, 14–18 for diagnostics and evaluation guidance, and 19–21 
 historical results.
 
 The current system always uses CFG and late fusion. Its scenario controls are
-cluster mode (none/simple/gated) and NDG structural features (off/on).
+cluster mode (none/simple) and NDG structural features (off/on).
 K-means++, GMM, and HDBSCAN remain algorithm settings within active clustering.
 Defaults are no clustering and no structural features.
 

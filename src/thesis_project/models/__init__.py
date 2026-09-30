@@ -14,7 +14,6 @@ from thesis_project.models.cfg_encoder import (
     normalize_cfg_structural_features,
 )
 from thesis_project.models.ndg_encoder import (
-    GatedClusterMetricEncoder,
     GatedNDGStructuralAugmentation,
     GatedMultiViewFusion,
     NDGEncoderConfig,
@@ -30,7 +29,6 @@ __all__ = [
     "CFGEncoderConfig",
     "CFGGraphClassifier",
     "GatedMultiViewFusion",
-    "GatedClusterMetricEncoder",
     "GatedNDGStructuralAugmentation",
     "NDGEncoderConfig",
     "NDGMultiViewRelationalGATEncoder",

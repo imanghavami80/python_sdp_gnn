@@ -49,7 +49,7 @@ binary release.
 
 ### `tests/test_ndg_encoder.py`
 
-Checks multi-view masking, fixed late-fusion behavior and all six feature scenarios, node-level output shape, reverse relations, outer
+Checks multi-view masking, fixed late-fusion behavior and all four feature scenarios, node-level output shape, reverse relations, outer
 project leakage guards, validation-project suitability, and training-only metric
 transformation.
 
@@ -95,5 +95,5 @@ behavior is removed.
 Tests also verify rejection of incompatible CFG construction/relations, removed fusion flags,
 nonempty output protection, and disabled structural tensors after graph merging.
 Small integration tests exercise feature fitting, selection, final retraining,
-and saved predictions/checkpoints for all six scenarios, using fixed upstream
+and saved predictions/checkpoints for all four scenarios, using fixed upstream
 embeddings to avoid requiring the Java corpus in the test suite.

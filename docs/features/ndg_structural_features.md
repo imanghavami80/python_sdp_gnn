@@ -62,7 +62,7 @@ supports it. Each held-out file's gate value is saved as
 `ndg_structural_gate` for diagnostics.
 
 The branch is disabled by default. It is independent of clustering: enable it
-with none, simple, or gated cluster mode. When disabled, extraction outputs are
+with none or simple cluster mode. When disabled, extraction outputs are
 not required.
 
 ## Commands

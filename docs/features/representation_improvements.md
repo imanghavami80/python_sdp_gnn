@@ -103,11 +103,6 @@ remain in experiment manifests for traceability.
   step uses already extracted project topology, not Java parsing.
 - The test suite covers these contracts, including lexical-scope counterexamples, AST syntax
   propagation into the encoder, and rejection of stale structural features.
-- A one-epoch CPU nested-LOPO pilot completed for Log4j using both new views,
-  gated k-means clustering and structural features. This is an integration check,
-  not a performance comparison. Full training runtime and predictive improvement
-  remain to be measured; extraction timings are local observations, not guarantees.
-
 ### Experiment commands
 
 Every scenario uses the same AST, CFG, and NDG implementations with late fusion.
@@ -118,13 +113,13 @@ either optional feature:
 .venv/bin/python scripts/evaluate_ndg_nested_lopo.py --cluster-mode none --no-ndg-structural-features --device cpu --seed 42 --output-dir outputs/promise/experiments/current_inputs_no_optional_features
 ```
 
-Then test gated clustering with handcrafted NDG features:
+Then test simple clustering with handcrafted NDG features:
 
 ```bash
-.venv/bin/python scripts/evaluate_ndg_nested_lopo.py --cluster-mode gated --cluster-method kmeans --ndg-structural-features --device cpu --seed 42 --output-dir outputs/promise/experiments/current_inputs_gated_structural
+.venv/bin/python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --cluster-method kmeans --ndg-structural-features --device cpu --seed 42 --output-dir outputs/promise/experiments/current_inputs_simple_structural
 ```
 
-See [the main README](../../README.md#experiment-scenarios) for all six scenarios.
+See [the main README](../../README.md#experiment-scenarios) for all four scenarios.
 Use a fresh output directory for each run; completed results are never overwritten.
 The two examples change both optional features, so use the remaining scenarios
 to isolate the contribution of each. Previous single-view representation ablation

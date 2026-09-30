@@ -60,7 +60,7 @@ training.
 
 ## Cluster-Derived Metric Features
 
-When `--cluster-mode simple` or `gated` is selected, after leakage-safe standardization, `training/clustering.py` creates a separate
+When `--cluster-mode simple` is selected, after leakage-safe standardization, `training/clustering.py` creates a separate
 k-means++, GMM, or HDBSCAN representation containing component/density features, soft
 memberships, outlier evidence, and smoothed cluster defect risk. It does not modify the 20
 original metrics. The clusterer is fitted only on the graph passed as training,

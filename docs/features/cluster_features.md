@@ -5,7 +5,7 @@
 ## Purpose
 
 Optional clustering derives features from the handcrafted PROMISE metrics.
-Use `--cluster-mode none|simple|gated`; none is the default. AST and CFG
+Use `--cluster-mode none|simple`; none is the default. AST and CFG
 graphs are not clustered: they already have independent learned
 representations.
 
@@ -54,35 +54,18 @@ number of density clusters changes.
 
 This creates `2K + 2` values in `cluster_x` while retaining the 20 original
 metrics unchanged in `metrics_x`. The hard cluster ID, maximum soft-membership
-confidence, outlier value, risk, and (for gated mode) learned gate are written to prediction
+confidence, outlier value, and risk are written to prediction
 CSVs for diagnostics.
 
 ## Integration modes
 
-The three modes use fixed late fusion and CFG. In `none`, no clusterer is
-fitted. In `simple`, metrics and cluster features are directly concatenated
-inside the encoder before a joint projection. In `gated`, separate projections
-are combined through the residual gate below. Both active modes use the same
-feature vector, including cross-fitted defect risk, to isolate integration.
+Both modes use fixed late fusion and CFG. In `none`, no clusterer is
+fitted. In `simple`, metrics and cluster features, including cross-fitted defect
+risk, are directly concatenated inside the encoder before a joint projection.
 The simple mode is not the historical five-feature clustering implementation.
 
 Handcrafted NDG structural features can independently be enabled with any mode.
 They enter after NDG message passing and do not alter cluster fitting.
-
-## Separate Gated Branch
-
-Metrics and cluster features have independent projection networks. A sigmoid
-gate controls the cluster residual before NDG message passing:
-
-```text
-metric_state = metric_projection(metrics_x)
-cluster_state = cluster_projection(cluster_x)
-ndg_input = LayerNorm(metric_state + gate * cluster_state)
-```
-
-The gate starts near zero through a `-2` output bias. The model therefore begins
-near the established no-cluster baseline and must learn evidence before giving
-the cluster branch substantial influence.
 
 ## Cluster Defect Risk
 
@@ -173,12 +156,11 @@ normalization, soft-membership scales, or defect risk.
 ```bash
 python scripts/evaluate_ndg_nested_lopo.py --cluster-mode none --device cpu
 python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --device cpu
-python scripts/evaluate_ndg_nested_lopo.py --cluster-mode gated --device cpu
 ```
 
 Add `--ndg-structural-features` to any command after extracting the structural
 features. K-means++ is the default; `--cluster-method gmm` and
-`--cluster-method hdbscan` remain available for either active mode.
+`--cluster-method hdbscan` remain available in simple mode.
 Automatic output directories include mode, algorithm, structural on/off, and
 seed. Nonempty experiment directories are rejected.
 
@@ -187,9 +169,8 @@ seed. Nonempty experiment directories are rejected.
 Each fold with clustering enabled writes `cluster_features.json`, containing the method, candidate
 silhouette, BIC, or relative-DBCV scores, selected parameter, fitted parameters, normalization values,
 smoothed defect rates, and feature names. `fold_metrics.csv` records the selected
-count, branch dimension, and test gate statistics. The overall summary records
-selected counts by fold. Prediction files include `cluster_defect_risk` and
-`cluster_gate`.
+count and branch dimension. The overall summary records
+selected counts by fold. Prediction files include `cluster_defect_risk`.
 
 For HDBSCAN, the metadata additionally records the selected `min_cluster_size`,
 relative DBCV, persistence, and training noise fraction. Its `cluster_id` is

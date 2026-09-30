@@ -3,7 +3,7 @@
 Historical report: measurements below describe experiments completed before the
 scenario cleanup. Their generated graphs, predictions, and checkpoints were
 deleted with `outputs/` at the user's request. Only CFG and late fusion are
-active now; clustering (none/simple/gated) and NDG structural features (off/on)
+active now; clustering (none/simple) and NDG structural features (off/on)
 are independent scenario choices. Tables are preserved as historical records,
 not new evaluation results.
 
@@ -15,7 +15,7 @@ revised several times to improve its correctness, information content, and
 coverage without changing the main thesis architecture.
 
 All completed model comparisons used strict nested Leave-One-Project-Out
-evaluation, late fusion, gated k-means++, random seed 42, and the same 5,303
+evaluation, late fusion, a retired experimental configuration, random seed 42, and the same 5,303
 mapped files.
 
 ## Important Coverage Clarification

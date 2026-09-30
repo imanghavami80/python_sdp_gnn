@@ -100,19 +100,6 @@ def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
     )
 
 
-def test_cluster_features_use_a_separate_bounded_gate() -> None:
-    encoder = NDGMultiViewRelationalGATEncoder(make_config("gated", cluster_dim=6))
-    encoder.eval()
-    inputs = graph_inputs()
-    inputs["cluster_x"] = torch.randn(5, 6)
-
-    _, attention = encoder(**inputs, return_attention=True)
-
-    assert attention["cluster_gate"].shape == (5, 1)
-    assert torch.all(attention["cluster_gate"] >= 0.0)
-    assert torch.all(attention["cluster_gate"] <= 1.0)
-
-
 def test_ndg_structural_features_use_a_separate_bounded_gate() -> None:
     encoder = NDGMultiViewRelationalGATEncoder(
         make_config(ndg_structural_dim=6)
@@ -253,7 +240,7 @@ def test_g_mean_uses_sensitivity_and_specificity() -> None:
     assert metrics["g_mean"] == pytest.approx(0.5 ** 0.5)
 
 
-@pytest.mark.parametrize("mode", ["none", "simple", "gated"])
+@pytest.mark.parametrize("mode", ["none", "simple"])
 @pytest.mark.parametrize("structural", [False, True])
 def test_all_scenarios_train_and_preserve_late_fusion(mode: str, structural: bool) -> None:
     config = make_config(mode, cluster_dim=6 if mode != "none" else 0,
@@ -319,7 +306,7 @@ def test_disabled_structural_features_survive_combining_graphs() -> None:
     assert test.ndg_structural_x.shape == (5, 0)
 
 
-@pytest.mark.parametrize("mode", ["none", "simple", "gated"])
+@pytest.mark.parametrize("mode", ["none", "simple"])
 @pytest.mark.parametrize("structural", [False, True])
 def test_nested_fold_feature_integration_and_saved_scenario(
     mode: str, structural: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -367,7 +354,6 @@ def test_nested_fold_feature_integration_and_saved_scenario(
     assert len(predictions) == len(embeddings) == 12
     assert np.isfinite(predictions.probability).all()
     assert row["cluster_mode"] == mode
-    assert predictions.cluster_gate.notna().all() if mode == "gated" else predictions.cluster_gate.isna().all()
     assert predictions.ndg_structural_gate.notna().all() if structural else predictions.ndg_structural_gate.isna().all()
     checkpoint = torch.load(tmp_path / "folds/test/ndg_encoder.pt", weights_only=False)
     assert checkpoint["encoder_config"]["cluster_mode"] == mode

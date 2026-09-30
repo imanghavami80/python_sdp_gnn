@@ -60,20 +60,18 @@ The two scenario switches are independent:
 
 | Switch | Values | Default |
 | --- | --- | --- |
-| `--cluster-mode` | `none`, `simple`, `gated` | `none` |
+| `--cluster-mode` | `none`, `simple` | `none` |
 | `--ndg-structural-features` / `--no-ndg-structural-features` | on / off | off |
 
 Simple clustering concatenates the cluster feature vector with metrics before
-NDG message passing. Gated clustering projects the same vector separately and
-injects a learned residual. Both use the same training-only cluster geometry
-and cross-fitted defect-risk construction. Neither clusters AST/CFG embeddings.
+NDG message passing. It uses training-only cluster geometry and cross-fitted
+defect-risk construction. It does not cluster AST/CFG embeddings.
 
 Optional NDG structural features enter through a separate residual gate after
 NDG message passing, before fusion with AST and CFG. They can accompany any
-clustering mode. The late-fusion gate exists in every scenario; “gated cluster”
-refers specifically to the additional cluster gate.
+clustering mode. The late-fusion gate exists in every scenario.
 
-All six scenarios use CFG and late fusion:
+All four scenarios use CFG and late fusion:
 
 ```bash
 # 1. Baseline
@@ -82,22 +80,16 @@ python scripts/evaluate_ndg_nested_lopo.py --device cpu
 # 2. Simple clustering
 python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --device cpu
 
-# 3. Gated clustering
-python scripts/evaluate_ndg_nested_lopo.py --cluster-mode gated --device cpu
-
-# 4. NDG structural features
+# 3. NDG structural features
 python scripts/evaluate_ndg_nested_lopo.py --ndg-structural-features --device cpu
 
-# 5. Simple clustering + NDG structural features
+# 4. Simple clustering + NDG structural features
 python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --ndg-structural-features --device cpu
-
-# 6. Gated clustering + NDG structural features
-python scripts/evaluate_ndg_nested_lopo.py --cluster-mode gated --ndg-structural-features --device cpu
 ```
 
 K-means++ is the default clustering algorithm. Existing `--cluster-method gmm`
-and `--cluster-method hdbscan` remain algorithm settings within simple/gated
-mode. Keep the algorithm and hyperparameters fixed when comparing the six
+and `--cluster-method hdbscan` remain algorithm settings within simple
+mode. Keep the algorithm and hyperparameters fixed when comparing the four
 scenarios. Run `--help` for training, input-path, and algorithm settings.
 
 The previous fusion selector and cluster-feature boolean switches have been
@@ -109,7 +101,7 @@ Default directories identify the scenario, algorithm when active, and seed:
 
 ```text
 outputs/promise/experiments/cluster_none__ndg_structural_off/seed_42/
-outputs/promise/experiments/cluster_gated_kmeans__ndg_structural_on/seed_42/
+outputs/promise/experiments/cluster_simple_kmeans__ndg_structural_on/seed_42/
 ```
 
 Each contains `run_manifest.json`, `nested_lopo_summary.json`,
