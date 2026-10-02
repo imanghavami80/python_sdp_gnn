@@ -97,9 +97,8 @@ outputs/promise/ast/tensors/<file>_edge_index.npy
 
 ## Downstream Use
 
-The AST graph index is consumed by the AST encoder workflows and by the strict
-nested NDG evaluator, which trains an AST encoder separately inside each outer
-LOPO fold.
+The within-project evaluator trains an AST encoder on each project’s training
+files and selects its checkpoint using that project’s validation files.
 
 The model requires the 20-column schema and matching node vocabulary. It embeds
 categorical IDs separately; they are not scaled as ordinal values. Incomplete

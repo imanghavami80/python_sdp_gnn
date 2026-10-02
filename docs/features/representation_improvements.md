@@ -1,8 +1,10 @@
 # 22 — AST and NDG Representation Improvements
 
+
+
 ## Scope
 
-CFG, late fusion, and the six clustering/structural-feature scenarios remain
+CFG, late fusion, and optional structural features remain
 unchanged. Each view has one supported implementation, without numbered names.
 The active inputs are `ast/`, `cfg/`, and `ndg/` under `outputs/promise/`.
 Historical experiment results are preserved but do not select alternative extractors.
@@ -105,27 +107,7 @@ remain in experiment manifests for traceability.
   propagation into the encoder, and rejection of stale structural features.
 ### Experiment commands
 
-Every scenario uses the same AST, CFG, and NDG implementations with late fusion.
-Only clustering mode and handcrafted NDG features vary. For example, run without
-either optional feature:
-
-```bash
-.venv/bin/python scripts/evaluate_ndg_nested_lopo.py --cluster-mode none --no-ndg-structural-features --device cpu --seed 42 --output-dir outputs/promise/experiments/current_inputs_no_optional_features
-```
-
-Then test simple clustering with handcrafted NDG features:
-
-```bash
-.venv/bin/python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --cluster-method kmeans --ndg-structural-features --device cpu --seed 42 --output-dir outputs/promise/experiments/current_inputs_simple_structural
-```
-
-See [the main README](../../README.md#experiment-scenarios) for all four scenarios.
-Use a fresh output directory for each run; completed results are never overwritten.
-The two examples change both optional features, so use the remaining scenarios
-to isolate the contribution of each. Previous single-view representation ablation
-commands are no longer supported by the current model.
-
-Compare macro-project metrics, per-project changes, and multiple seeds. Historical
-results remain historical; do not relabel them as runs of the current inputs.
-Extraction validity and pilot completion do not establish a predictive improvement.
-The transferred validation threshold remains a calibration limitation.
+Use the [within-project evaluation guide](../training/evaluate_ndg_within_project.md)
+for the baseline and optional structural-feature runs. Keep extraction artifacts,
+file splits and seeds matched. Extraction validity does not establish predictive
+improvement.

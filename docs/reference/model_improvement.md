@@ -1,44 +1,16 @@
-# 18 — Model Improvement Strategy
+# 18 — Within-Project Model Evaluation Strategy
 
-The active model always uses AST, CFG, relational NDG message passing, and
-late fusion. The supported scenario factors are cluster mode (none/simple)
-and handcrafted NDG structural features (off/on).
+Start with the [within-project baseline](../training/evaluate_ndg_within_project.md).
+Use identical source-file splits, seeds and extraction artifacts when comparing
+optional structural features. Fit scalers on training
+nodes only; select epochs and thresholds on validation nodes only. Preserve the
+full unlabeled graph and clearly describe the experiment as transductive.
 
-## Controlled evaluation
+Report per-project and macro-project PR-AUC, ROC-AUC, F1, MCC, balanced accuracy,
+and Brier score. Report skipped projects and small test-class counts. Pooled
+metrics are secondary. A single split is preliminary evidence; additional
+matched seeds can establish whether differences persist when resources permit.
+Do not select a favorable seed or use test results to tune a threshold.
 
-Start with the baseline: neither clustering nor handcrafted NDG features.
-Then compare simple clustering against the baseline using a fixed clustering algorithm
-(default k-means++), feature construction, graph artifacts, and seeds. Repeat
-both modes with NDG structural features enabled. These four scenarios
-separate cluster integration from topology-feature augmentation.
-
-Use macro-project PR-AUC and ROC-AUC for ranking, MCC/balanced accuracy/F1 for
-classification, and Brier score for probabilities. Report per-project scores
-and variation across seeds. Pooled metrics are secondary because project sizes
-and label distributions differ substantially.
-
-The current inner-validation threshold is transferred to a freshly retrained
-model. This preserves the outer-test boundary but does not guarantee calibrated
-probabilities or a well-matched final threshold. Diagnose score distributions,
-predicted-positive rates, and calibration before attributing every metric change
-to a representation. Do not tune thresholds on test labels.
-
-## Seeds and provenance
-
-Run matched seeds for each scenario:
-
-```bash
-for seed in 42 43 44 45 46; do
-  python scripts/evaluate_ndg_nested_lopo.py --seed "$seed" --device cpu
-done
-```
-
-Automatic output names include scenario and seed; nonempty directories are
-rejected. Never select the best seed. Compare manifest arguments, input hashes,
-CFG markers, and completed fold counts before aggregating results.
-
-Historical reports document earlier decisions; they are not results from the
-cleaned architecture. New experiments are required after regenerating inputs.
-
-Training time alone does not indicate learning quality. Use selection histories,
-held-out results, and variance to decide whether more training is useful.
+Keep the selected checkpoint for test evaluation. Do not retrain it after
+selecting the threshold. Compare only matched within-project runs.

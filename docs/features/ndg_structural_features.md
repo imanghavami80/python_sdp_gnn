@@ -1,5 +1,7 @@
 # 07 — Handcrafted NDG Structural Features
 
+
+
 **Implementations:** `scripts/extract_ndg_structural_features.py` and
 `src/thesis_project/features/ndg_structural.py`
 
@@ -45,7 +47,7 @@ code metrics ([Tantithamthavorn et al., 2022](https://arxiv.org/abs/2202.06145))
 
 ## Model Integration
 
-For every nested LOPO split, feature means and standard deviations are learned
+For every within-project split, feature means and standard deviations are learned
 from training nodes only. The standardized values pass through their own MLP.
 A sigmoid gate then adds them as a residual to the learned NDG embedding:
 
@@ -58,12 +60,9 @@ prediction_state = late_fusion(enriched_ndg, AST_embedding, CFG_embedding)
 
 The gate starts near zero (bias `-2`) so the model initially behaves close to
 the existing NDG model and increases structural influence only when training
-supports it. Each held-out file's gate value is saved as
-`ndg_structural_gate` for diagnostics.
+supports it. The encoder exposes the gate through its attention diagnostics.
 
-The branch is disabled by default. It is independent of clustering: enable it
-with none or simple cluster mode. When disabled, extraction outputs are
-not required.
+The branch is disabled by default. When disabled, extraction outputs are not required.
 
 ## Commands
 
@@ -81,18 +80,16 @@ mismatches. Use the default NDG paths described in
 Run the proposed late-fusion experiment on CPU:
 
 ```bash
-.venv/bin/python scripts/evaluate_ndg_nested_lopo.py \
+.venv/bin/python scripts/evaluate_ndg_within_project.py \
   --ndg-structural-features \
-  --cluster-mode none \
   --device cpu
 ```
 
 Run the directly comparable ablation with the same evaluator and seed:
 
 ```bash
-.venv/bin/python scripts/evaluate_ndg_nested_lopo.py \
+.venv/bin/python scripts/evaluate_ndg_within_project.py \
   --no-ndg-structural-features \
-  --cluster-mode none \
   --device cpu
 ```
 

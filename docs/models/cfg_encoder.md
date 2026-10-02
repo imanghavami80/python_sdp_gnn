@@ -85,8 +85,8 @@ embedding.
 
 ## Consumers
 
-- `scripts/evaluate_cfg_lopo.py`
-- `scripts/evaluate_ndg_nested_lopo.py`
+- `scripts/cfg_training.py`
+- `scripts/evaluate_ndg_within_project.py`
 
 ## Extension Rules
 

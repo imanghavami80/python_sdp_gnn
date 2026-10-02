@@ -226,7 +226,7 @@ def preprocess_frames(
             if (metrics < 0).any().any():
                 raise ValueError("log1p transformation requires non-negative metric features")
             scaled_by_project.append(pd.DataFrame(np.log1p(metrics), columns=METRIC_COLUMNS))
-        effective_scale_scope = "deferred_to_nested_lopo"
+        effective_scale_scope = "deferred_to_within_project_training"
     elif scale_scope == "global":
         combined_metrics = pd.concat([df[METRIC_COLUMNS] for df in work_frames], ignore_index=True)
         medians = combined_metrics.median(numeric_only=True)
@@ -380,7 +380,7 @@ def parse_args() -> argparse.Namespace:
         "--scaler",
         choices=["none", "standard", "minmax"],
         default="none",
-        help="Default 'none' defers fitted scaling to nested LOPO and writes log1p metrics.",
+        help="Default 'none' defers fitted scaling to within-project training and writes log1p metrics.",
     )
     parser.add_argument(
         "--scale-scope",

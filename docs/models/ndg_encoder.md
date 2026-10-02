@@ -1,5 +1,7 @@
 # 11 — NDG Encoder
 
+
+
 **Implementation:** `src/thesis_project/models/ndg_encoder.py`
 
 ## Contract
@@ -7,22 +9,12 @@
 The encoder always performs late fusion. It returns one contextual embedding
 per NDG file node; the classifier produces one defect logit per file.
 
-Inputs are `metrics_x`, `cluster_x`, `ndg_structural_x`, independent
+Inputs are `metrics_x`, `ndg_structural_x`, independent
 `ast_x` and `cfg_x` embeddings, `view_mask`, `edge_index`, and
 `edge_type`. Disabled feature branches use zero-width tensors. The metrics
 view is required; unavailable AST and CFG views are masked.
 
-## Cluster integration before NDG message passing
-
-`NDGEncoderConfig.cluster_mode` determines the metric-state construction:
-
-| Mode | NDG input |
-| --- | --- |
-| `none` | projection of metrics |
-| `simple` | projection of concatenated metrics and cluster features |
-
-The simple mode requires a positive `cluster_dim`; none requires zero.
-The tensor `metrics_x` remains the original 20 metrics in either mode.
+Metrics are projected into the NDG hidden space before message passing.
 
 ## Relational NDG encoding
 
@@ -35,7 +27,7 @@ affect this independently computed NDG embedding.
 
 When `ndg_structural_dim > 0`, a separate MLP projects training-standardized
 topology descriptors. A sigmoid gate controls their residual addition after
-message passing. This branch is independent of the cluster mode.
+message passing.
 
 ## Fixed late fusion
 
@@ -59,5 +51,4 @@ The architecture cleanup changes parameter initialization and checkpoint
 structure. Historical checkpoints are not compatible with the new configuration;
 rerun matched scenarios with the current code.
 
-See [08 — Cluster features](../features/cluster_features.md) and
-[07 — NDG structural features](../features/ndg_structural_features.md).
+See [07 — NDG structural features](../features/ndg_structural_features.md).

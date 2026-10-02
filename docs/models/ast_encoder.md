@@ -84,9 +84,8 @@ of which nodes influenced pooling more strongly.
 
 ## Consumers
 
-- `scripts/generate_ast_embeddings.py`
-- `scripts/evaluate_ast_lopo.py`
-- `scripts/evaluate_ndg_nested_lopo.py`
+- `scripts/ast_training.py`
+- `scripts/evaluate_ndg_within_project.py`
 
 ## Extension Rules
 

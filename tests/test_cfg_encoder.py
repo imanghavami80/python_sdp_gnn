@@ -17,7 +17,7 @@ SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from evaluate_cfg_lopo import extract_test_embeddings
+from cfg_training import extract_test_embeddings
 from extract_promise_cfg import (
     EDGE_TYPE_TO_ID,
     annotate_cfg_roles,

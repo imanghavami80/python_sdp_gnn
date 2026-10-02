@@ -17,8 +17,6 @@ class NDGEncoderConfig:
     ast_dim: int
     cfg_dim: int
     num_edge_types: int
-    cluster_dim: int = 0
-    cluster_mode: str = "none"
     ndg_structural_dim: int = 0
     hidden_dim: int = 128
     output_dim: int = 128
@@ -32,8 +30,6 @@ class NDGEncoderConfig:
         for name in ("metrics_dim", "ast_dim", "cfg_dim", "num_edge_types", "hidden_dim", "output_dim"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.cluster_dim < 0:
-            raise ValueError("cluster_dim must be non-negative")
         if self.ndg_structural_dim < 0:
             raise ValueError("ndg_structural_dim must be non-negative")
         if self.edge_type_embedding_dim <= 0:
@@ -46,10 +42,7 @@ class NDGEncoderConfig:
             raise ValueError("dropout must be in [0, 1)")
         if not 0.0 <= self.attention_dropout < 1.0:
             raise ValueError("attention_dropout must be in [0, 1)")
-        if self.cluster_mode not in {"none", "simple"}:
-            raise ValueError("cluster_mode must be none or simple")
-        if (self.cluster_mode == "none") != (self.cluster_dim == 0):
-            raise ValueError("cluster_dim must be zero for none and positive for simple")
+
 
 
 class ViewProjection(nn.Module):
@@ -159,7 +152,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         super().__init__()
         self.config = config
         self.metrics_projection = ViewProjection(
-            config.metrics_dim + config.cluster_dim, config.hidden_dim, config.dropout
+            config.metrics_dim, config.hidden_dim, config.dropout
         )
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
         head_dim = config.hidden_dim // config.heads
@@ -216,7 +209,6 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
     def forward(
         self,
         metrics_x: Tensor,
-        cluster_x: Tensor,
         ndg_structural_x: Tensor,
         ast_x: Tensor,
         cfg_x: Tensor,
@@ -229,8 +221,6 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         num_nodes = metrics_x.size(0)
         if metrics_x.shape != (num_nodes, self.config.metrics_dim):
             raise ValueError("metrics_x has an unexpected shape")
-        if cluster_x.shape != (num_nodes, self.config.cluster_dim):
-            raise ValueError("cluster_x has an unexpected shape")
         if ndg_structural_x.shape != (num_nodes, self.config.ndg_structural_dim):
             raise ValueError("ndg_structural_x has an unexpected shape")
         if ast_x.shape != (num_nodes, self.config.ast_dim):
@@ -246,11 +236,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
 
         if not torch.all(view_mask[:, 0]):
             raise ValueError("The metrics view must be available for every NDG node")
-        metric_input = (
-            torch.cat([metrics_x, cluster_x], dim=-1)
-            if self.config.cluster_mode == "simple" else metrics_x
-        )
-        metric_state = self.metrics_projection(metric_input)
+        metric_state = self.metrics_projection(metrics_x)
         # AST and CFG enter only after independent NDG message passing.
         h = metric_state
         view_weights = metrics_x.new_zeros((num_nodes, 3))

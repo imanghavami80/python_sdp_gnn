@@ -1,47 +1,48 @@
-# 19 — Model Results and Historical Record
+# 19 — Within-Project Results
 
-## Status after cleanup
+The active runner is `scripts/evaluate_ndg_within_project.py`. Each project gets
+a separate model and a grouped 60/20/20 train/validation/test split. The full
+unlabeled NDG is visible; only training labels contribute to the loss.
 
-An earlier scenario cleanup deleted the original generated artifacts. The
-measurements below are historical and are not results of the current AST and NDG
-inputs. Inputs have now been regenerated at the default paths, while existing
-experiment directories were preserved. A short integration pilot does not replace
-a full predictive comparison. See [representation improvements](docs/features/representation_improvements.md).
+The full `baseline_seed42` experiment completed ten projects and evaluated 873
+held-out files. Forrest (30 clean / 2 defective) and Xalan (1 clean / 898 defective)
+cannot support both classes in three disjoint splits. Their preprocessing is not
+the reason for exclusion.
 
-Every new run uses CFG and late fusion. Compare the four combinations of
-cluster mode (none/simple) and NDG structural features (off/on), using
-the rebuild and run commands in [00 — README](README.md).
-
-## Historical extraction
-
-The previously measured benchmark had 12 projects, 5,430 input rows, 5,303
-mapped files, and 12 NDGs. CFG yielded 4,573 valid CFGs and 730 placeholders;
-Log4j had 178 valid CFGs out of 194 files. These counts must be verified again
-from regenerated extraction summaries.
-
-## Historical predictive comparison
-
-Unweighted macro-project means, 12 held-out projects, seed 42:
-
-| Metric | Older no-cluster run | CFG + NDG structural |
+| Metric | Equal-project mean | Pooled test files |
 | --- | ---: | ---: |
-| Accuracy | 0.5271 | 0.5127 |
-| Balanced accuracy | 0.5567 | 0.5646 |
-| Precision | 0.4805 | 0.4057 |
-| Recall | 0.8218 | 0.6301 |
-| F1 | 0.5156 | 0.3994 |
-| MCC | 0.0973 | 0.1378 |
-| G-Mean | 0.3361 | 0.3877 |
-| ROC-AUC | 0.6810 | 0.6726 |
-| PR-AUC | 0.5677 | 0.5706 |
-| Brier score (lower is better) | 0.2804 | 0.3078 |
+| F1 | 0.6407 | 0.7257 |
+| ROC-AUC | 0.8201 | 0.8042 |
+| Average precision (PR) | 0.6848 | 0.7675 |
+| Balanced accuracy | 0.6693 | 0.7754 |
+| MCC | 0.3423 | 0.5409 |
 
-The older no-cluster run is not a verified current CFG baseline. The NDG
-structural run disabled clustering and predicted no defective files in Camel
-and Xalan. These historical results do not establish the causal contribution
-of structural features; use matched runs of the current code and inputs.
+The training-majority classifier's mean project F1 is 0.3368 and mean balanced
+accuracy is 0.5. These results show useful signal, but only one split/seed was
+evaluated. Log4j's high F1 (0.9737) comes from predicting every test file defective;
+its test set has only two clean files. High F1 alone is not proof of robustness.
 
-See [20 — Short CFG history](docs/reports/cfg_view_progress_report_short.md)
-and [21 — Detailed CFG history](docs/reports/cfg_view_progress_report.md) for
-the recorded original-CFG, def-use, PDG, CFG before bytecode recovery, and CFG comparisons.
-Those alternatives are historical only; CFG is the sole active extractor.
+Saved histories verify actual training: AST ran 12–50 epochs, CFG 14–50 and NDG
+11–24 per project. The original run did not record elapsed times. The updated
+runner adds timing and provenance without changing the split or epoch budgets;
+the completed baseline artifacts remain unchanged.
+
+## Full experiment
+
+The completed run used:
+
+```bash
+.venv/bin/python scripts/evaluate_ndg_within_project.py \
+  --no-ndg-structural-features --device cpu --seed 42 \
+  --output-dir outputs/promise/within_project/baseline_seed42
+```
+
+Read `within_project_summary.json`, `project_metrics.csv`, and
+`all_test_node_predictions.csv` in that directory. Report macro-project and
+per-project metrics, test class counts, and skipped projects. The majority-class
+baseline in the summary uses training prevalence; it is not another neural model.
+Compare optional structural features using the same seed and file split.
+For new runs, use a fresh output directory such as `baseline_audited_seed42`.
+Use `--preflight-only` to inspect all projects without training.
+
+See [the evaluation guide](docs/training/evaluate_ndg_within_project.md).

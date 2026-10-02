@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Train a global AST classifier and save exploratory file embeddings."""
+"""Reusable file-view training for within-project evaluation."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -73,56 +70,6 @@ class ASTGraphDataset:
         )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train AST GIN encoder and save AST graph embeddings.")
-    parser.add_argument("--graph-index", type=Path, default=Path("outputs/promise/ast/graph_index.csv"))
-    parser.add_argument("--node-type-vocab", type=Path, default=Path("outputs/promise/ast/node_type_vocab.json"))
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/promise/embeddings/ast"))
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--val-ratio", type=float, default=0.15)
-    parser.add_argument("--patience", type=int, default=10)
-    parser.add_argument("--min-delta", type=float, default=1e-4)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--output-dim", type=int, default=128)
-    parser.add_argument("--num-layers", type=int, default=3)
-    parser.add_argument("--node-type-embedding-dim", type=int, default=32)
-    parser.add_argument("--dropout", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
-    parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument(
-        "--no-normalize-structural-features",
-        action="store_true",
-        help="Use raw AST structural features instead of depth/max_depth and log1p(out_degree).",
-    )
-    return parser.parse_args()
-
-
-def resolve_path(path: Path) -> Path:
-    return (REPO_ROOT / path).resolve() if not path.is_absolute() else path.resolve()
-
-
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def choose_device(requested: str) -> torch.device:
-    if requested == "cpu":
-        return torch.device("cpu")
-    if requested == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("--device cuda was requested, but CUDA is not available")
-        return torch.device("cuda")
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
 def load_inputs(graph_index_path: Path, vocab_path: Path) -> tuple[pd.DataFrame, dict[str, int]]:
     if not graph_index_path.exists():
         raise FileNotFoundError(f"Missing AST graph index: {graph_index_path}. Run scripts/extract_promise_ast.py first.")
@@ -149,21 +96,6 @@ def load_inputs(graph_index_path: Path, vocab_path: Path) -> tuple[pd.DataFrame,
     if vocab != {name: i for i, name in enumerate(NODE_TYPES)}:
         raise ValueError("AST node vocabulary does not match the encoder")
     return graph_index.reset_index(drop=True), {str(key): int(value) for key, value in vocab.items()}
-
-
-def split_indices(labels: np.ndarray, val_ratio: float, seed: int) -> tuple[np.ndarray, np.ndarray]:
-    all_indices = np.arange(len(labels))
-    if val_ratio <= 0.0:
-        return all_indices, np.array([], dtype=np.int64)
-    if not 0.0 < val_ratio < 1.0:
-        raise ValueError("val-ratio must be in [0, 1)")
-    train_idx, val_idx = train_test_split(
-        all_indices,
-        test_size=val_ratio,
-        random_state=seed,
-        stratify=labels,
-    )
-    return np.array(train_idx, dtype=np.int64), np.array(val_idx, dtype=np.int64)
 
 
 def make_loader(dataset: ASTGraphDataset, batch_size: int, shuffle: bool, num_workers: int) -> DataLoader:
@@ -325,170 +257,3 @@ def extract_embeddings(
     return embeddings
 
 
-def save_outputs(
-    output_dir: Path,
-    graph_index: pd.DataFrame,
-    embeddings: np.ndarray,
-    model: ASTGraphClassifier,
-    encoder_config: ASTEncoderConfig,
-    vocab: dict[str, int],
-    train_indices: np.ndarray,
-    val_indices: np.ndarray,
-    history: list[dict[str, Any]],
-    best_info: dict[str, Any],
-    args: argparse.Namespace,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    embeddings_path = output_dir / "ast_embeddings.npy"
-    index_path = output_dir / "ast_embedding_index.csv"
-    history_path = output_dir / "ast_training_history.csv"
-    checkpoint_path = output_dir / "ast_encoder.pt"
-    summary_path = output_dir / "ast_embedding_summary.json"
-    split_path = output_dir / "ast_train_val_split.json"
-
-    np.save(embeddings_path, embeddings)
-    embedding_index = graph_index[
-        ["graph_id", "dataset_name", "name", "source_path", "label", "num_nodes", "num_edges", "parser_mode"]
-    ].copy()
-    embedding_index.insert(0, "embedding_row", np.arange(len(embedding_index), dtype=np.int64))
-    embedding_index["embedding_npy"] = str(embeddings_path)
-    embedding_index.to_csv(index_path, index=False)
-    pd.DataFrame(history).to_csv(history_path, index=False)
-
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "encoder_config": asdict(encoder_config),
-            "node_type_vocab": vocab,
-            "best_info": best_info,
-            "script_args": vars(args),
-        },
-        checkpoint_path,
-    )
-    split_path.write_text(
-        json.dumps(
-            {
-                "train_indices": train_indices.astype(int).tolist(),
-                "val_indices": val_indices.astype(int).tolist(),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-    summary = {
-        "graph_index": str(resolve_path(args.graph_index)),
-        "output_dir": str(output_dir),
-        "embeddings_npy": str(embeddings_path),
-        "embedding_index_csv": str(index_path),
-        "checkpoint": str(checkpoint_path),
-        "training_history_csv": str(history_path),
-        "num_graphs": int(embeddings.shape[0]),
-        "embedding_dim": int(embeddings.shape[1]),
-        "num_node_types": int(len(vocab)),
-        "structural_feature_names": SYNTAX_FEATURE_NAMES,
-        "structural_feature_transform": {
-            "enabled": not args.no_normalize_structural_features,
-            "depth": "depth / max_depth_in_graph",
-            "out_degree": "log1p(out_degree)",
-            "has_identifier": "binary flag unchanged",
-        },
-        "train_graphs": int(len(train_indices)),
-        "val_graphs": int(len(val_indices)),
-        "label_counts": {str(key): int(value) for key, value in graph_index["label"].value_counts().sort_index().items()},
-        "datasets": graph_index["dataset_name"].value_counts().sort_index().astype(int).to_dict(),
-        "encoder_config": asdict(encoder_config),
-        "best_info": best_info,
-    }
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-
-    print(f"embeddings={embeddings_path}")
-    print(f"embedding_index={index_path}")
-    print(f"checkpoint={checkpoint_path}")
-    print(f"summary={summary_path}")
-
-
-def main() -> None:
-    args = parse_args()
-    if args.epochs <= 0:
-        raise ValueError("epochs must be positive because embeddings should come from a trained encoder")
-    if args.batch_size <= 0:
-        raise ValueError("batch-size must be positive")
-
-    set_seed(args.seed)
-    graph_index_path = resolve_path(args.graph_index)
-    vocab_path = resolve_path(args.node_type_vocab)
-    output_dir = resolve_path(args.output_dir)
-    graph_index, vocab = load_inputs(graph_index_path, vocab_path)
-    labels = graph_index["label"].astype(int).to_numpy()
-    train_indices, val_indices = split_indices(labels, args.val_ratio, args.seed)
-
-    encoder_config = ASTEncoderConfig(
-        num_node_types=len(vocab),
-        structural_feature_dim=int(graph_index.feature_dim.iloc[0]),
-        node_type_embedding_dim=args.node_type_embedding_dim,
-        hidden_dim=args.hidden_dim,
-        output_dim=args.output_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        use_batch_norm=True,
-        bidirectional_edges=True,
-    )
-    device = choose_device(args.device)
-    encoder = ASTGINEncoder(encoder_config)
-    model = ASTGraphClassifier(encoder, dropout=args.dropout).to(device)
-
-    normalize_structural_features = not args.no_normalize_structural_features
-    train_dataset = ASTGraphDataset(graph_index, train_indices, normalize_structural_features=normalize_structural_features)
-    val_dataset = (
-        ASTGraphDataset(graph_index, val_indices, normalize_structural_features=normalize_structural_features)
-        if len(val_indices)
-        else None
-    )
-    full_dataset = ASTGraphDataset(graph_index, normalize_structural_features=normalize_structural_features)
-    train_loader = make_loader(train_dataset, args.batch_size, shuffle=True, num_workers=args.num_workers)
-    val_loader = make_loader(val_dataset, args.batch_size, shuffle=False, num_workers=args.num_workers) if val_dataset else None
-
-    print(
-        "AST embedding training started. "
-        f"graphs={len(graph_index)} train={len(train_indices)} val={len(val_indices)} "
-        f"device={device} embedding_dim={args.output_dim} "
-        f"normalize_structural_features={normalize_structural_features}"
-    )
-    best_state, history, best_info = train_model(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        labels=labels,
-        train_indices=train_indices,
-        args=args,
-        device=device,
-    )
-    model.load_state_dict(best_state)
-    model.to(device)
-    embeddings = extract_embeddings(
-        model=model,
-        dataset=full_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        device=device,
-        output_dim=args.output_dim,
-    )
-    save_outputs(
-        output_dir=output_dir,
-        graph_index=graph_index,
-        embeddings=embeddings,
-        model=model.cpu(),
-        encoder_config=encoder_config,
-        vocab=vocab,
-        train_indices=train_indices,
-        val_indices=val_indices,
-        history=history,
-        best_info=best_info,
-        args=args,
-    )
-    print("AST embedding generation finished.")
-
-
-if __name__ == "__main__":
-    main()

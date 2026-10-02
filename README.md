@@ -1,5 +1,7 @@
 # 00 — Multi-View Software Defect Prediction
 
+The primary scenario is **within-project defect prediction**: train and test on
+disjoint files from the same project, using a separate model for each project.
 The model predicts defects for Java files using software metrics, AST, CFG,
 and a project-level Network Dependency Graph (NDG). Late fusion is always used:
 the NDG GNN first processes metric-based file states and dependencies, and its
@@ -54,88 +56,56 @@ This creates 38 topology descriptors per file with the current seven dependency
 relations. Features describe directed degree, relation types, centrality,
 reachability, reciprocity, and component membership. Extraction is label-free.
 
-## Experiment scenarios
+## Run within-project prediction
 
-The two scenario switches are independent:
-
-| Switch | Values | Default |
-| --- | --- | --- |
-| `--cluster-mode` | `none`, `simple` | `none` |
-| `--ndg-structural-features` / `--no-ndg-structural-features` | on / off | off |
-
-Simple clustering concatenates the cluster feature vector with metrics before
-NDG message passing. It uses training-only cluster geometry and cross-fitted
-defect-risk construction. It does not cluster AST/CFG embeddings.
-
-Optional NDG structural features enter through a separate residual gate after
-NDG message passing, before fusion with AST and CFG. They can accompany any
-clustering mode. The late-fusion gate exists in every scenario.
-
-All four scenarios use CFG and late fusion:
+Existing extracted inputs can be reused. Audit all projects without training:
 
 ```bash
-# 1. Baseline
-python scripts/evaluate_ndg_nested_lopo.py --device cpu
-
-# 2. Simple clustering
-python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --device cpu
-
-# 3. NDG structural features
-python scripts/evaluate_ndg_nested_lopo.py --ndg-structural-features --device cpu
-
-# 4. Simple clustering + NDG structural features
-python scripts/evaluate_ndg_nested_lopo.py --cluster-mode simple --ndg-structural-features --device cpu
+.venv/bin/python scripts/evaluate_ndg_within_project.py \
+  --preflight-only --device cpu --seed 42 \
+  --output-dir outputs/promise/within_project/preflight_seed42
 ```
 
-K-means++ is the default clustering algorithm. Existing `--cluster-method gmm`
-and `--cluster-method hdbscan` remain algorithm settings within simple
-mode. Keep the algorithm and hyperparameters fixed when comparing the four
-scenarios. Run `--help` for training, input-path, and algorithm settings.
-
-The previous fusion selector and cluster-feature boolean switches have been
-removed. No fusion argument is needed.
-
-## Outputs and comparison
-
-Default directories identify the scenario, algorithm when active, and seed:
-
-```text
-outputs/promise/experiments/cluster_none__ndg_structural_off/seed_42/
-outputs/promise/experiments/cluster_simple_kmeans__ndg_structural_on/seed_42/
-```
-
-Each contains `run_manifest.json`, `nested_lopo_summary.json`,
-`fold_metrics.csv`, `all_test_node_predictions.csv`, embeddings, and fold
-checkpoints. The manifest records arguments and input-index hashes. CFG
-markers and the exact control-flow vocabulary are checked before evaluation.
-
-Existing nonempty experiment directories are rejected. For a pilot, changed
-hyperparameters, or another run with the same seed, use a new `--output-dir`.
+Run the baseline in a new directory:
 
 ```bash
-python scripts/evaluate_ndg_nested_lopo.py \
-  --test-project log4j-1.2 --upstream-epochs 1 --ndg-epochs 1 \
-  --device cpu --output-dir outputs/promise/pilot_log4j
+.venv/bin/python scripts/evaluate_ndg_within_project.py \
+  --no-ndg-structural-features \
+  --device cpu --seed 42 \
+  --output-dir outputs/promise/within_project/baseline_audited_seed42
 ```
 
-Nested LOPO retrains AST, CFG, and NDG inside every outer project fold. Scaling,
-clustering, epoch selection, and threshold selection exclude the held-out
-project. It uses one inner validation project; it does not average over all
-possible inner project folds. Missing AST/CFG views are masked.
+Each project uses a reproducible 60/20/20 training/validation/test split, grouped
+by Java source file and stratified by defect status. The full unlabeled NDG is
+visible, while training loss uses only training labels: **transductive
+within-project evaluation**. Validation selects checkpoints and the threshold;
+the same checkpoint is tested without final retraining.
 
-Compare macro-project PR-AUC, ROC-AUC, MCC, balanced accuracy, F1, and Brier
-score across matched seeds and graph artifacts. The majority-class baseline in
-each summary is not the full model's no-cluster/no-structural baseline.
-Thresholds selected on the inner model are transferred to the final retrained
-model; this existing calibration limitation remains and can affect results.
-The cleanup does not establish improved predictive performance.
+Forrest and Xalan cannot provide both classes in three disjoint splits and are
+reported as ineligible in the preflight report: Forrest has only two defective
+files and Xalan only one clean file. All 12 are audited; ten support evaluation.
+Use `--require-all-projects` to stop before training if any project is ineligible.
+Use `--project ant-1.7` for a single project. One seed is the default to keep the
+local workload manageable.
 
-## Documentation
+Optional structural features are enabled with `--ndg-structural-features`.
+Use a new output directory and the same seed for comparisons.
 
-Read [01 — Documentation map](docs/README.md) for the numbered reading order.
-Historical measurements remain in [19 — Results record](MODEL_RESULTS.md) and
-the CFG progress reports; their raw outputs were deleted during cleanup.
+See [23 — Within-project evaluation](docs/training/evaluate_ndg_within_project.md)
+for the protocol, leakage boundaries, and output schema.
+The first completed baseline is documented in [MODEL_RESULTS.md](MODEL_RESULTS.md).
 
-Standalone AST/CFG evaluation and global AST embedding scripts remain diagnostic
-tools. Their embeddings must not replace fold-specific training in the final
-evaluation. Keep `--num-workers 0` on macOS; CPU is a practical starting device.
+## Results and documentation
+
+Results live under `outputs/promise/within_project/`. Each experiment saves
+`within_project_summary.json`, `project_metrics.csv`, test predictions, exact
+file splits, validation histories, and reusable model checkpoints. Existing
+nonempty output directories are rejected.
+Runs also record per-stage durations, actual epoch counts, environment versions,
+and source/input fingerprints. Deterministic PyTorch algorithms are required by
+default. Early stopping and small per-project training sets can make runs fast.
+
+[01 — Documentation map](docs/README.md) links the extraction, models, training,
+and result interpretation guides.
+
+Keep `--num-workers 0` on macOS. CPU is a practical starting device.

@@ -43,14 +43,14 @@ arbitrary source file.
 
 ## Leakage Policy
 
-The default `--scaler none` is required for final nested LOPO evaluation. It
+The default `--scaler none` is required for within-project evaluation. It
 applies `log1p` but does not fit imputation or scaling over all projects. The
 final evaluator fits median imputation and standard scaling using only the
-training nodes of each fold.
+training nodes of each project split.
 
 `--scaler standard` and `--scaler minmax` are available for descriptive or
-standalone analysis. They must not be used as input to the final cross-project
-experiment because fitted preprocessing would see held-out projects.
+standalone analysis. They must not be used as input to the final
+experiment because fitted preprocessing would see held-out files.
 
 ## Run
 

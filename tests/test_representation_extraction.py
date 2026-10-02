@@ -192,7 +192,7 @@ def test_ast_syntax_reaches_model_and_backward():
 def test_structural_features_reject_changed_source_graph(tmp_path):
     import hashlib
     import pandas as pd
-    from evaluate_ndg_nested_lopo import validate_structural_provenance
+    from ndg_common import validate_structural_provenance
 
     graph = tmp_path / "graph.json"
     graph.write_text('{"edges": []}', encoding="utf-8")
@@ -210,7 +210,7 @@ def test_structural_features_reject_changed_source_graph(tmp_path):
 
 def test_ndg_loader_requires_scope_aware_inputs(tmp_path):
     import pandas as pd
-    from evaluate_ndg_nested_lopo import load_base_ndgs
+    from ndg_common import load_base_ndgs
 
     index = tmp_path / "ndg.csv"
     row = {key: "unused" for key in (
@@ -227,7 +227,7 @@ def test_ndg_loader_requires_scope_aware_inputs(tmp_path):
 
 def test_structural_features_require_source_fingerprint(tmp_path):
     import pandas as pd
-    from evaluate_ndg_nested_lopo import validate_structural_provenance
+    from ndg_common import validate_structural_provenance
 
     index = tmp_path / "ndg.csv"
     features = tmp_path / "features.csv"
