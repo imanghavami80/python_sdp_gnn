@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Within-project, transductive AST + CFG + NDG defect prediction."""
+"""Within-project, transductive four-view defect prediction."""
 from __future__ import annotations
 
 import argparse
@@ -17,6 +17,7 @@ import torch
 import ndg_common as common
 import experiment_audit as audit
 from thesis_project.models import NDGEncoderConfig
+from thesis_project.features.ndg_node_inputs import dependency_feature_names
 from thesis_project.training.ndg import binary_metrics, make_model, model_inputs
 from thesis_project.training.within_project import (
     InsufficientClassSupport, split_files, scale_from_training, train_masked,
@@ -26,7 +27,7 @@ PROTOCOL = "within_project_transductive_grouped_holdout"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run separate within-project AST + CFG + NDG models (transductive file split).")
+    parser = argparse.ArgumentParser(description="Train four-view AST, CFG, NDG, and metrics models within each project.")
     parser.add_argument("--ndg-index", type=Path, default=Path("outputs/promise/ndg/graph_index.csv"))
     parser.add_argument("--ndg-edge-vocab", type=Path, default=Path("outputs/promise/ndg/edge_type_vocab.json"))
     parser.add_argument("--ndg-feature-names", type=Path, default=Path("outputs/promise/ndg/feature_names.json"))
@@ -106,9 +107,10 @@ def preflight(projects, selected, ast, cfg, args):
         try:
             split = split_files(base.names, base.source_paths, base.y, args.seed,
                                 args.validation_fraction, args.test_fraction)
-            for view, index in [('ast', ast), ('cfg', cfg)]:
-                _, parts = upstream_indices(index, base, split)
-                row[f'{view}_available_nodes'] = sum(map(len, parts.values()))
+            if ast is not None and cfg is not None:
+                for view, index in [('ast', ast), ('cfg', cfg)]:
+                    _, parts = upstream_indices(index, base, split)
+                    row[f'{view}_available_nodes'] = sum(map(len, parts.values()))
             for part, indices in split.items():
                 cc = np.bincount(base.y[indices].astype(int), minlength=2)
                 row.update({f'{part}_nodes': len(indices), f'{part}_clean': int(cc[0]),
@@ -183,7 +185,10 @@ def run_project(base, split, ast_data, ast_vocab, cfg_data, cfg_vocabs, cfg_feat
     stage_started = time.perf_counter()
     cfg, cfg_checkpoint, ch = train_upstream('cfg', ci, cp, cfg_vocabs, cfg_features, args, device)
     cfg_seconds = time.perf_counter()-stage_started
-    graph = common.assemble_ndgs({base.dataset_name: base}, ast, cfg, args.embedding_dim, [base.dataset_name])[base.dataset_name]
+    graph = common.assemble_ndgs(
+        {base.dataset_name: base}, ast, cfg, args.embedding_dim, [base.dataset_name],
+        num_forward_relations=config.num_edge_types // 2,
+    )[base.dataset_name]
     graph, preprocessing = scale_from_training(graph, split['train'])
     # Expose no test labels to loss/epoch/threshold code.
     hidden_y = graph.y.clone()
@@ -192,41 +197,56 @@ def run_project(base, split, ast_data, ast_vocab, cfg_data, cfg_vocabs, cfg_feat
     common.set_seed(args.seed+2000)
     model = make_model(config, device)
     stage_started = time.perf_counter()
-    epoch, threshold, history = train_masked(model, graph, split['train'], split['validation'], common.ndg_args(args))
+    epoch, threshold, history = train_masked(
+        model, graph, split['train'], split['validation'], common.ndg_args(args))
     ndg_seconds = time.perf_counter()-stage_started
     model.eval()
     with torch.no_grad():
-        embeddings = model.encode(**model_inputs(graph))
+        embeddings, view_info = model.encoder(**model_inputs(graph), return_attention=True)
         probabilities = torch.sigmoid(model.classifier(embeddings).view(-1)).cpu().numpy()
     test = split['test']
     majority = float(np.mean(base.y[split['train']]) >= .5)
     predictions = pd.DataFrame(dict(dataset_name=base.dataset_name, name=np.array(base.names)[test],
                                     source_path=np.array(base.source_paths)[test], label=base.y[test].astype(int),
                                     probability=probabilities[test], prediction=(probabilities[test] >= threshold).astype(int),
-                                    decision_threshold=threshold, baseline_probability=majority,
-                                    baseline_prediction=int(majority)))
+                                    decision_threshold=threshold, majority_class_probability=majority,
+                                    majority_class_prediction=int(majority)))
     predictions.to_csv(directory/'test_node_predictions.csv', index=False)
     val = split['validation']
     pd.DataFrame(dict(name=np.array(base.names)[val], label=base.y[val].astype(int), probability=probabilities[val])).to_csv(directory/'validation_predictions.csv', index=False)
     np.save(directory/'test_node_embeddings.npy', embeddings[test].cpu().numpy())
-    for name, h in [('ast', ah), ('cfg', ch), ('ndg', history)]:
+    # Aligned, post-projection vectors used by fusion. Missing AST/CFG rows are zero
+    # and identified by view_mask; node_names preserve the graph's row order.
+    aligned_views = view_info['view_embeddings'].cpu().numpy()
+    np.savez_compressed(directory/'file_view_embeddings.npz',
+                        node_names=np.asarray(base.names),
+                        view_mask=graph.view_mask.cpu().numpy(),
+                        ndg=aligned_views[:, 0], metrics=aligned_views[:, 1],
+                        ast=aligned_views[:, 2], cfg=aligned_views[:, 3],
+                        fusion_weights=view_info['view_weights'].cpu().numpy())
+    pd.DataFrame(history).to_csv(directory/'ndg_selection_history.csv', index=False)
+    for name, checkpoint, h in [('ast', ast_checkpoint, ah), ('cfg', cfg_checkpoint, ch)]:
         pd.DataFrame(h).to_csv(directory/f'{name}_selection_history.csv', index=False)
-    for name, checkpoint in [('ast', ast_checkpoint), ('cfg', cfg_checkpoint)]:
         torch.save(checkpoint, directory/f'{name}_encoder.pt')
     torch.save(dict(protocol=PROTOCOL, encoder_config=asdict(config), model_state_dict=model.cpu().state_dict(),
                     selected_epochs=epoch, decision_threshold=threshold, preprocessing=preprocessing,
+                    ndg_node_input='dependencies', view_count=4,
+                    ndg_node_feature_names=args.ndg_node_feature_names,
                     node_names=base.names, split={k: v.tolist() for k,v in split.items()},
                     model_inputs={k: v.detach().cpu() for k,v in model_inputs(graph).items()},
                     refit_after_selection=False), directory/'ndg_encoder.pt')
     metrics = binary_metrics(base.y[test], probabilities[test], threshold)
-    baseline = binary_metrics(base.y[test], np.full(len(test), majority))
+    majority_scores = binary_metrics(base.y[test], np.full(len(test), majority))
     return dict(project=base.dataset_name, train_nodes=len(split['train']), validation_nodes=len(val), test_nodes=len(test),
+                ndg_node_input='dependencies', view_count=4,
                 ast_selected_epochs=ast_checkpoint['selected_epochs'], cfg_selected_epochs=cfg_checkpoint['selected_epochs'],
                 ndg_selected_epochs=epoch, decision_threshold=threshold,
                 ast_epochs_run=len(ah), cfg_epochs_run=len(ch), ndg_epochs_run=len(history),
-                ast_seconds=ast_seconds, cfg_seconds=cfg_seconds, ndg_seconds=ndg_seconds,
+                ast_seconds=ast_seconds, cfg_seconds=cfg_seconds,
+                ndg_seconds=ndg_seconds,
                 elapsed_seconds=time.perf_counter()-started,
-                **{f'model_{k}': v for k,v in metrics.items()}, **{f'baseline_{k}': v for k,v in baseline.items()}), predictions
+                **{f'model_{k}': v for k,v in metrics.items()},
+                **{f'majority_class_{k}': v for k,v in majority_scores.items()}), predictions
 
 
 def main():
@@ -240,6 +260,10 @@ def main():
     device = common.choose_device(args.device)
     output = common.resolve_path(args.output_dir or Path('outputs/promise/within_project')/common_scenario(args)/f'seed_{args.seed}')
     ndg_vocab = common.load_json(common.resolve_path(args.ndg_edge_vocab))
+    if sorted(ndg_vocab.values()) != list(range(len(ndg_vocab))):
+        raise ValueError('NDG relation IDs must be contiguous from zero')
+    relation_names = [name for name, _ in sorted(ndg_vocab.items(), key=lambda item: item[1])]
+    args.ndg_node_feature_names = dependency_feature_names(relation_names)
     metric_names = common.load_json(common.resolve_path(args.ndg_feature_names))
     structural, structural_names = None, []
     if args.ndg_structural_features:
@@ -257,24 +281,26 @@ def main():
         [args.cfg_index, args.cfg_node_vocab, args.cfg_stmt_vocab, args.cfg_invoke_vocab, args.cfg_edge_vocab, args.cfg_feature_names]])
     common.validate_cfg_inputs(common.resolve_path(args.cfg_index), ev)
     config = NDGEncoderConfig(metrics_dim=len(metric_names), ast_dim=args.embedding_dim, cfg_dim=args.embedding_dim,
-                              num_edge_types=2*len(ndg_vocab), ndg_structural_dim=len(structural_names), hidden_dim=args.hidden_dim,
+                              num_edge_types=2*len(ndg_vocab), ndg_node_dim=len(args.ndg_node_feature_names),
+                              ndg_structural_dim=len(structural_names), hidden_dim=args.hidden_dim,
                               output_dim=args.embedding_dim, num_layers=args.ndg_layers, heads=args.heads,
                               dropout=args.dropout, attention_dropout=args.attention_dropout)
-    common.prepare_output_dir(output)
     eligibility, splits = preflight(projects, selected, ast, cfg, args)
-    eligibility.to_csv(output/'project_eligibility.csv', index=False)
     print(eligibility[['project', 'clean_nodes', 'defective_nodes', 'status', 'reason']].to_string(index=False), flush=True)
-    paths = [args.ast_index, args.ast_node_vocab, args.cfg_index, args.cfg_node_vocab, args.cfg_stmt_vocab,
-             args.cfg_invoke_vocab, args.cfg_edge_vocab, args.cfg_feature_names, args.ndg_index,
-             args.ndg_edge_vocab, args.ndg_feature_names]
+    paths = [args.ast_index, args.ast_node_vocab, args.cfg_index, args.cfg_node_vocab,
+             args.cfg_stmt_vocab, args.cfg_invoke_vocab, args.cfg_edge_vocab,
+             args.cfg_feature_names, args.ndg_index, args.ndg_edge_vocab, args.ndg_feature_names]
     if args.ndg_structural_features:
         paths += [args.ndg_structural_index, args.ndg_structural_feature_names]
     print('Recording environment, source and extracted-input fingerprints...', flush=True)
+    input_hashes = audit.fingerprint_inputs(paths, selected, common.resolve_path)
+    common.prepare_output_dir(output)
+    eligibility.to_csv(output/'project_eligibility.csv', index=False)
     manifest = dict(protocol=PROTOCOL, started_at=started_at, environment=audit.environment(device),
                     stage_seeds=dict(split=args.seed, ast=args.seed, cfg=args.seed+1000, ndg=args.seed+2000),
                     arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()},
                     source_sha256=audit.fingerprint_source(common.REPO_ROOT),
-                    input_sha256=audit.fingerprint_inputs(paths, selected, common.resolve_path))
+                    input_sha256=input_hashes)
     (output/'run_manifest.json').write_text(json.dumps(manifest, indent=2))
     skipped = eligibility.loc[eligibility.status.eq('ineligible'), ['project', 'reason']].to_dict('records')
     if args.require_all_projects and skipped:
@@ -290,11 +316,12 @@ def main():
         print(f'project={name} protocol={PROTOCOL} status=started', flush=True)
         base = projects[name]
         row, predictions = run_project(base, splits[name], ast, ast_vocab, cfg, (nv,sv,iv,ev), cfg_features,
-                                           config, args, device, output/'projects'/name)
+                                       config, args, device, output/'projects'/name)
         rows.append(row); frames.append(predictions)
         pd.DataFrame(rows).to_csv(output/'project_metrics.csv', index=False)
         print(f'project={name} status=finished f1={row["model_f1"]:.4f} seconds={row["elapsed_seconds"]:.1f}', flush=True)
     summary = dict(protocol=PROTOCOL, requested_projects=selected, completed_projects=len(rows), skipped_projects=skipped,
+                    ndg_node_input='dependencies', view_count=4,
                     split_fractions=dict(train=1-args.validation_fraction-args.test_fraction, validation=args.validation_fraction, test=args.test_fraction),
                     transductive=True, test_labels_used_for_training=False, refit_after_selection=False,
                     started_at=started_at, finished_at=datetime.now(timezone.utc).isoformat(),
@@ -302,16 +329,16 @@ def main():
     if frames:
         predictions = pd.concat(frames, ignore_index=True)
         predictions.to_csv(output/'all_test_node_predictions.csv', index=False)
-        summary.update(nodes_evaluated=len(predictions), model_macro_project_metrics=common.aggregate_fold_metrics(pd.DataFrame(rows),'model'),
-                       model_pooled_metrics=common.safe_pooled_metrics(predictions,'probability','prediction'),
-                       baseline_macro_project_metrics=common.aggregate_fold_metrics(pd.DataFrame(rows),'baseline'),
-                       baseline_pooled_metrics=common.safe_pooled_metrics(predictions,'baseline_probability','baseline_prediction'))
+        summary.update(nodes_evaluated=len(predictions),
+                       model_macro_project_metrics=common.aggregate_fold_metrics(pd.DataFrame(rows),'model'),
+                       majority_class_macro_project_metrics=common.aggregate_fold_metrics(
+                           pd.DataFrame(rows), 'majority_class'))
     (output/'within_project_summary.json').write_text(json.dumps(summary, indent=2))
     print(f'completed={len(rows)} skipped={len(skipped)} summary={output / "within_project_summary.json"}', flush=True)
 
 
 def common_scenario(args):
-    return f'ndg_structural_{"on" if args.ndg_structural_features else "off"}'
+    return f'four_view_structural_{"on" if args.ndg_structural_features else "off"}'
 
 
 if __name__ == '__main__':

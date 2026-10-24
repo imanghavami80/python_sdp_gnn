@@ -39,6 +39,7 @@ class ProjectGraph:
     edge_index: Tensor
     edge_type: Tensor
     ndg_structural_x: Tensor | None = None
+    ndg_node_x: Tensor | None = None
 
     @property
     def num_nodes(self) -> int:
@@ -59,6 +60,7 @@ class ProjectGraph:
             ndg_structural_x=(
                 None if self.ndg_structural_x is None else self.ndg_structural_x.to(device)
             ),
+            ndg_node_x=None if self.ndg_node_x is None else self.ndg_node_x.to(device),
         )
 
 
@@ -86,8 +88,12 @@ def model_inputs(graph: ProjectGraph) -> dict[str, Tensor]:
     ndg_structural_x = graph.ndg_structural_x
     if ndg_structural_x is None:
         ndg_structural_x = graph.metrics_x.new_empty((graph.num_nodes, 0))
+    ndg_node_x = graph.ndg_node_x
+    if ndg_node_x is None:
+        ndg_node_x = graph.metrics_x.new_empty((graph.num_nodes, 0))
     return {
         "metrics_x": graph.metrics_x,
+        "ndg_node_x": ndg_node_x,
         "ndg_structural_x": ndg_structural_x,
         "ast_x": graph.ast_x,
         "cfg_x": graph.cfg_x,

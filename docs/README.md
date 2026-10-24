@@ -1,24 +1,15 @@
-# 01 — Documentation Reading Map
+# Documentation
 
-Start with document 00 and [23 — Within-project evaluation](training/evaluate_ndg_within_project.md).
-Each project has its own model and disjoint file splits.
+Start with the [project README](../README.md), then read the
+[four-view model flow](features/four_view_dependency_inputs.md) and
+[within-project evaluation](training/evaluate_ndg_within_project.md).
 
-| Read | Document |
-| --- | --- |
-| 00 | [Multi-View Software Defect Prediction](../README.md) |
-| 01 | [Documentation Reading Map](README.md) |
-| 02 | [PROMISE Preprocessing](pipeline/preprocess_promise.md) |
-| 03 | [AST Extraction](pipeline/extract_promise_ast.md) |
-| 04 | [CFG Extraction](pipeline/extract_promise_cfg.md) |
-| 05 | [Soot CFG Backend](reference/soot_cfg_extractor.md) |
-| 06 | [NDG Extraction](pipeline/extract_promise_ndg.md) |
-| 07 | [Handcrafted NDG Structural Features](features/ndg_structural_features.md) |
-| 09 | [AST Encoder](models/ast_encoder.md) |
-| 10 | [CFG Encoder](models/cfg_encoder.md) |
-| 11 | [NDG Encoder](models/ndg_encoder.md) |
-| 12 | [Shared NDG Training Utilities](training/ndg_training.md) |
-| 17 | [Testing and Validation](reference/testing.md) |
-| 18 | [Model Improvement Strategy](reference/model_improvement.md) |
-| 19 | [Model Results and Historical Record](../MODEL_RESULTS.md) |
-| 22 | [AST and NDG representation improvements](features/representation_improvements.md) |
-| 23 | [Within-project evaluation](training/evaluate_ndg_within_project.md) |
+Extraction details: [preprocessing](pipeline/preprocess_promise.md),
+[AST](pipeline/extract_promise_ast.md), [CFG](pipeline/extract_promise_cfg.md),
+and [NDG](pipeline/extract_promise_ndg.md).
+
+Model details: [AST encoder](models/ast_encoder.md),
+[CFG encoder](models/cfg_encoder.md), and [NDG encoder and fusion](models/ndg_encoder.md).
+
+The current four-view reference results are recorded in the
+[README](../README.md#current-reference-baseline).

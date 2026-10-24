@@ -71,6 +71,7 @@ def scale_from_training(graph, indices):
     metrics = (imputed-mean)/std
     metrics[:, missing] = 0  # No training evidence for this coordinate.
     structural = graph.ndg_structural_x
+    ndg_node = graph.ndg_node_x
     params = dict(metric_medians=medians.tolist(), metric_mean=mean.tolist(), metric_std=std.tolist(),
                   all_missing_metric_columns=torch.where(missing)[0].tolist())
     if structural is not None and structural.shape[1]:
@@ -79,9 +80,18 @@ def scale_from_training(graph, indices):
         ss = torch.where(ss > 1e-6, ss, torch.ones_like(ss))
         structural = (structural-sm)/ss
         params.update(structural_mean=sm.tolist(), structural_std=ss.tolist())
-    if not torch.isfinite(metrics).all() or (structural is not None and not torch.isfinite(structural).all()):
+    if ndg_node is not None and ndg_node.shape[1]:
+        nm = ndg_node[indices].mean(dim=0)
+        ns = ndg_node[indices].std(dim=0, unbiased=False)
+        ns = torch.where(ns > 1e-6, ns, torch.ones_like(ns))
+        ndg_node = (ndg_node - nm) / ns
+        params.update(ndg_node_mean=nm.tolist(), ndg_node_std=ns.tolist())
+    if (not torch.isfinite(metrics).all()
+            or (structural is not None and not torch.isfinite(structural).all())
+            or (ndg_node is not None and not torch.isfinite(ndg_node).all())):
         raise ValueError('Non-finite preprocessed features')
-    return replace(graph, metrics_x=metrics, ndg_structural_x=structural), params
+    return replace(graph, metrics_x=metrics, ndg_structural_x=structural,
+                   ndg_node_x=ndg_node), params
 
 
 def train_masked(model, graph, train_indices, validation_indices, args):
@@ -97,18 +107,19 @@ def train_masked(model, graph, train_indices, validation_indices, args):
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     best_state, best_loss, best_epoch, stale = None, float('inf'), 0, 0
+    inputs = model_inputs(graph)
     history = []
     for epoch in range(1, args.epochs+1):
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        logits = model(**model_inputs(graph))
+        logits = model(**inputs)
         loss = criterion(logits[train], graph.y[train])
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
         optimizer.step()
         model.eval()
         with torch.no_grad():
-            val_loss = float(criterion(model(**model_inputs(graph))[val], graph.y[val]))
+            val_loss = float(criterion(model(**inputs)[val], graph.y[val]))
         if not np.isfinite(val_loss):
             raise ValueError('Non-finite validation loss')
         history.append(dict(epoch=epoch, train_loss=float(loss.detach()), validation_loss=val_loss))
@@ -125,6 +136,6 @@ def train_masked(model, graph, train_indices, validation_indices, args):
     model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        probabilities = torch.sigmoid(model(**model_inputs(graph))[val]).cpu().numpy()
+        probabilities = torch.sigmoid(model(**inputs)[val]).cpu().numpy()
     threshold = select_f1_threshold(graph.y[val].cpu().numpy(), probabilities)
     return best_epoch, threshold, history

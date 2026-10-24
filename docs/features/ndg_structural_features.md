@@ -52,15 +52,17 @@ from training nodes only. The standardized values pass through their own MLP.
 A sigmoid gate then adds them as a residual to the learned NDG embedding:
 
 ```text
-ndg_embedding = relational_NDG_GNN(metrics, typed_dependencies)
+ndg_embedding = relational_NDG_GNN(node_inputs, typed_dependencies)
 structural_state = structural_MLP(structural_features)
 enriched_ndg = ndg_embedding + gate * structural_state
-prediction_state = late_fusion(enriched_ndg, AST_embedding, CFG_embedding)
+prediction_state = late_fusion(enriched_ndg, metrics_embedding, AST_embedding, CFG_embedding)
 ```
 
 The gate starts near zero (bias `-2`) so the model initially behaves close to
 the existing NDG model and increases structural influence only when training
 supports it. The encoder exposes the gate through its attention diagnostics.
+Here `node_inputs` are typed dependency signatures. This optional augmentation
+is separate from the standard four-view inputs.
 
 The branch is disabled by default. When disabled, extraction outputs are not required.
 

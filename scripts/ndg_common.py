@@ -29,8 +29,9 @@ try:
     import cfg_training as cfg_pipeline
     from extract_promise_cfg import EDGE_TYPE_TO_ID as CFG_EDGE_TYPE_TO_ID
     import ast_training as ast_pipeline
-    from thesis_project.training.ndg import ProjectGraph, add_inverse_relations, binary_metrics
+    from thesis_project.training.ndg import ProjectGraph, add_inverse_relations
     from thesis_project.models import ASTEncoderConfig, ASTGINEncoder, ASTGraphClassifier
+    from thesis_project.features.ndg_node_inputs import dependency_node_inputs
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise SystemExit(
         "Missing GNN dependencies. Install them with:\n"
@@ -290,22 +291,25 @@ def assemble_ndgs(
     cfg_lookup: dict[tuple[str, str], np.ndarray],
     embedding_dim: int,
     selected_projects: list[str],
+    num_forward_relations: int,
 ) -> dict[str, ProjectGraph]:
     graphs: dict[str, ProjectGraph] = {}
     for project_name in selected_projects:
         base = base_projects[project_name]
         ast_x = np.zeros((len(base.names), embedding_dim), dtype=np.float32)
         cfg_x = np.zeros((len(base.names), embedding_dim), dtype=np.float32)
-        mask = np.zeros((len(base.names), 3), dtype=np.bool_)
-        mask[:, 0] = True
+        mask = np.zeros((len(base.names), 4), dtype=np.bool_)
+        mask[:, :2] = True
         for node_id, name in enumerate(base.names):
             key = (project_name, name)
             if key in ast_lookup:
                 ast_x[node_id] = ast_lookup[key]
-                mask[node_id, 1] = True
+                mask[node_id, 2] = True
             if key in cfg_lookup:
                 cfg_x[node_id] = cfg_lookup[key]
-                mask[node_id, 2] = True
+                mask[node_id, 3] = True
+        ndg_node_x = dependency_node_inputs(len(base.names), base.edge_index, base.edge_type,
+                                            num_forward_relations)
         graphs[project_name] = ProjectGraph(
             dataset_name=project_name,
             names=base.names,
@@ -318,20 +322,9 @@ def assemble_ndgs(
             edge_index=torch.from_numpy(base.edge_index),
             edge_type=torch.from_numpy(base.edge_type),
             ndg_structural_x=torch.from_numpy(base.ndg_structural_x),
+            ndg_node_x=torch.from_numpy(ndg_node_x),
         )
     return graphs
-
-
-def safe_pooled_metrics(
-    predictions: pd.DataFrame,
-    probability_column: str,
-    prediction_column: str,
-) -> dict[str, float | None]:
-    return binary_metrics(
-        predictions["label"].to_numpy(dtype=np.int64),
-        predictions[probability_column].to_numpy(dtype=np.float32),
-        predictions=predictions[prediction_column].to_numpy(dtype=np.int64),
-    )
 
 
 def aggregate_fold_metrics(fold_metrics: pd.DataFrame, prefix: str) -> dict[str, dict[str, float | int | None]]:

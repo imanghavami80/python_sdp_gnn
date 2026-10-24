@@ -28,6 +28,7 @@ from thesis_project.training import (
 
 def make_config(
     ndg_structural_dim: int = 0,
+    ndg_node_dim: int = 9,
 ) -> NDGEncoderConfig:
     return NDGEncoderConfig(
         metrics_dim=20,
@@ -35,6 +36,7 @@ def make_config(
         cfg_dim=16,
         num_edge_types=14,
         ndg_structural_dim=ndg_structural_dim,
+        ndg_node_dim=ndg_node_dim,
         hidden_dim=32,
         output_dim=24,
         edge_type_embedding_dim=8,
@@ -48,11 +50,12 @@ def make_config(
 def graph_inputs() -> dict[str, torch.Tensor]:
     return {
         "metrics_x": torch.randn(5, 20),
+        "ndg_node_x": torch.randn(5, 9),
         "ndg_structural_x": torch.empty(5, 0),
         "ast_x": torch.randn(5, 16),
         "cfg_x": torch.randn(5, 16),
         "view_mask": torch.tensor(
-            [[1, 1, 1], [1, 1, 0], [1, 1, 1], [1, 0, 0], [1, 1, 1]], dtype=torch.bool
+            [[1, 1, 1, 1], [1, 1, 1, 0], [1, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 1]], dtype=torch.bool
         ),
         "edge_index": torch.tensor([[0, 1, 2, 3, 1, 2], [1, 2, 3, 4, 0, 1]], dtype=torch.long),
         "edge_type": torch.tensor([0, 1, 2, 3, 7, 8], dtype=torch.long),
@@ -65,9 +68,11 @@ def test_ndg_encoder_returns_one_embedding_per_file() -> None:
     embeddings, attention = encoder(**graph_inputs(), return_attention=True)
 
     assert embeddings.shape == (5, 24)
-    assert attention["view_weights"].shape == (5, 3)
+    assert attention["view_weights"].shape == (5, 4)
+    assert attention["view_embeddings"].shape == (5, 4, 32)
     assert torch.allclose(attention["view_weights"].sum(dim=1), torch.ones(5), atol=1e-6)
-    assert attention["view_weights"][1, 2].item() == 0.0
+    assert attention["view_weights"][1, 3].item() == 0.0
+    assert torch.count_nonzero(attention["view_embeddings"][1, 3]) == 0
     assert "edge_attention" in attention
 
 
@@ -91,6 +96,28 @@ def test_late_fusion_keeps_ndg_encoding_independent_of_ast_and_cfg() -> None:
     )
 
 
+def test_four_views_keep_dataset_metrics_out_of_ndg_message_passing() -> None:
+    encoder = NDGMultiViewRelationalGATEncoder(make_config(ndg_node_dim=9))
+    encoder.eval()
+    inputs = graph_inputs()
+    inputs['ndg_node_x'].requires_grad_()
+    inputs['metrics_x'].requires_grad_()
+    output, info = encoder(**inputs, return_attention=True)
+    assert output.shape == (5, 24)
+    assert info['view_weights'].shape == (5, 4)
+    assert info['view_weights'][1, 3].item() == 0
+    assert info['view_weights'][3, 2:].sum().item() == 0
+    changed_metrics = inputs['metrics_x'].detach().clone()
+    changed_metrics[:, 0] += 10
+    changed = {**inputs, 'metrics_x': changed_metrics}
+    changed_output, changed_info = encoder(**changed, return_attention=True)
+    torch.testing.assert_close(info['ndg_embeddings'], changed_info['ndg_embeddings'])
+    assert not torch.allclose(output, changed_output)
+    output.sum().backward()
+    assert inputs['ndg_node_x'].grad.abs().sum() > 0
+    assert inputs['metrics_x'].grad.abs().sum() > 0
+
+
 def test_ndg_structural_features_use_a_separate_bounded_gate() -> None:
     encoder = NDGMultiViewRelationalGATEncoder(
         make_config(ndg_structural_dim=6)
@@ -110,7 +137,7 @@ def test_ndg_structural_features_use_a_separate_bounded_gate() -> None:
 def test_metrics_view_is_required() -> None:
     encoder = NDGMultiViewRelationalGATEncoder(make_config())
     inputs = graph_inputs()
-    inputs["view_mask"][0, 0] = False
+    inputs["view_mask"][0, 1] = False
     with pytest.raises(ValueError, match="metrics view"):
         encoder(**inputs)
 

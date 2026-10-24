@@ -6,7 +6,10 @@ The suite covers preprocessing, Java source mapping, AST/CFG extraction and
 encoding, typed NDG dependencies, optional structural descriptors, masked late
 fusion, source-file grouping, training-only scaling, and held-out-label isolation.
 Within-project integration tests verify checkpoint prediction reproduction,
-validation-controlled training, and identical predictions after test-label changes.
+validation-controlled training and identical predictions after test-label changes.
+Four-view tests verify directed dependency signatures, metrics/NDG separation,
+missing-view masks, training-only scaling, saved view embeddings, macro
+aggregation, and checkpoint replay.
 
 For a short real-data pilot:
 

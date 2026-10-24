@@ -17,6 +17,7 @@ class NDGEncoderConfig:
     ast_dim: int
     cfg_dim: int
     num_edge_types: int
+    ndg_node_dim: int
     ndg_structural_dim: int = 0
     hidden_dim: int = 128
     output_dim: int = 128
@@ -30,8 +31,8 @@ class NDGEncoderConfig:
         for name in ("metrics_dim", "ast_dim", "cfg_dim", "num_edge_types", "hidden_dim", "output_dim"):
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.ndg_structural_dim < 0:
-            raise ValueError("ndg_structural_dim must be non-negative")
+        if self.ndg_node_dim <= 0 or self.ndg_structural_dim < 0:
+            raise ValueError("NDG node dimension must be positive and structural dimension non-negative")
         if self.edge_type_embedding_dim <= 0:
             raise ValueError("edge_type_embedding_dim must be positive")
         if self.num_layers <= 0:
@@ -89,20 +90,17 @@ class GatedNDGStructuralAugmentation(nn.Module):
 
 
 class GatedMultiViewFusion(nn.Module):
-    """Weight and combine three available file-level representations."""
+    """Project, mask, and weight the four independently learned file views."""
 
-    NUM_VIEWS = 3
-
-    def __init__(self, metrics_dim: int, ast_dim: int, cfg_dim: int, hidden_dim: int, dropout: float) -> None:
+    def __init__(self, ndg_dim: int, ast_dim: int, cfg_dim: int, hidden_dim: int,
+                 dropout: float, metrics_view_dim: int) -> None:
         super().__init__()
+        dimensions = [ndg_dim, metrics_view_dim, ast_dim, cfg_dim]
+        self.num_views = len(dimensions)
         self.projections = nn.ModuleList(
-            [
-                ViewProjection(metrics_dim, hidden_dim, dropout),
-                ViewProjection(ast_dim, hidden_dim, dropout),
-                ViewProjection(cfg_dim, hidden_dim, dropout),
-            ]
+            [ViewProjection(dim, hidden_dim, dropout) for dim in dimensions]
         )
-        self.view_embeddings = nn.Parameter(torch.empty(self.NUM_VIEWS, hidden_dim))
+        self.view_embeddings = nn.Parameter(torch.empty(self.num_views, hidden_dim))
         nn.init.normal_(self.view_embeddings, std=0.02)
         self.gate = nn.Sequential(
             nn.LayerNorm(hidden_dim),
@@ -111,7 +109,7 @@ class GatedMultiViewFusion(nn.Module):
             nn.Linear(max(hidden_dim // 2, 1), 1),
         )
         self.combine = nn.Sequential(
-            nn.Linear(self.NUM_VIEWS * hidden_dim, hidden_dim),
+            nn.Linear(self.num_views * hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.LayerNorm(hidden_dim),
@@ -119,19 +117,21 @@ class GatedMultiViewFusion(nn.Module):
 
     def forward(
         self,
-        metrics_x: Tensor,
+        ndg_x: Tensor,
         ast_x: Tensor,
         cfg_x: Tensor,
         view_mask: Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        if view_mask.shape != (metrics_x.size(0), self.NUM_VIEWS):
+        metrics_x: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        if view_mask.shape != (ndg_x.size(0), self.num_views):
             raise ValueError(
-                f"view_mask must have shape {(metrics_x.size(0), self.NUM_VIEWS)}, received {tuple(view_mask.shape)}"
+                f"view_mask must have shape {(ndg_x.size(0), self.num_views)}, received {tuple(view_mask.shape)}"
             )
         if not torch.all(view_mask[:, 0]):
             raise ValueError("The primary view must be available for every NDG node")
-
-        inputs = (metrics_x, ast_x, cfg_x)
+        if not torch.all(view_mask[:, 1]):
+            raise ValueError("Dataset metrics view must be available for every NDG node")
+        inputs = [ndg_x, metrics_x, ast_x, cfg_x]
         projected = torch.stack(
             [projection(view) for projection, view in zip(self.projections, inputs, strict=True)],
             dim=1,
@@ -142,7 +142,7 @@ class GatedMultiViewFusion(nn.Module):
         view_weights = torch.softmax(gate_logits, dim=1)
         weighted_views = projected * view_weights.unsqueeze(-1)
         fused = self.combine(weighted_views.flatten(start_dim=1))
-        return fused, view_weights
+        return fused, view_weights, projected.masked_fill(~view_mask.bool().unsqueeze(-1), 0)
 
 
 class NDGMultiViewRelationalGATEncoder(nn.Module):
@@ -151,9 +151,7 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
     def __init__(self, config: NDGEncoderConfig) -> None:
         super().__init__()
         self.config = config
-        self.metrics_projection = ViewProjection(
-            config.metrics_dim, config.hidden_dim, config.dropout
-        )
+        self.node_projection = ViewProjection(config.ndg_node_dim, config.hidden_dim, config.dropout)
         self.edge_type_embedding = nn.Embedding(config.num_edge_types, config.edge_type_embedding_dim)
         head_dim = config.hidden_dim // config.heads
         self.convs = nn.ModuleList(
@@ -189,11 +187,12 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             else None
         )
         self.late_fusion = GatedMultiViewFusion(
-            metrics_dim=config.output_dim,
+            ndg_dim=config.output_dim,
             ast_dim=config.ast_dim,
             cfg_dim=config.cfg_dim,
             hidden_dim=config.hidden_dim,
             dropout=config.dropout,
+            metrics_view_dim=config.metrics_dim,
         )
         self.late_output_projection = nn.Sequential(
             nn.Linear(config.hidden_dim, config.output_dim),
@@ -216,11 +215,14 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         edge_index: Tensor,
         edge_type: Tensor,
         return_attention: bool = False,
+        ndg_node_x: Tensor | None = None,
     ) -> Tensor | tuple[Tensor, dict[str, Tensor]]:
         """Return one contextual embedding per NDG file node."""
         num_nodes = metrics_x.size(0)
         if metrics_x.shape != (num_nodes, self.config.metrics_dim):
             raise ValueError("metrics_x has an unexpected shape")
+        if ndg_node_x is None or ndg_node_x.shape != (num_nodes, self.config.ndg_node_dim):
+            raise ValueError("ndg_node_x has an unexpected shape")
         if ndg_structural_x.shape != (num_nodes, self.config.ndg_structural_dim):
             raise ValueError("ndg_structural_x has an unexpected shape")
         if ast_x.shape != (num_nodes, self.config.ast_dim):
@@ -235,11 +237,13 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
             raise ValueError("edge_type contains an id outside the configured vocabulary")
 
         if not torch.all(view_mask[:, 0]):
-            raise ValueError("The metrics view must be available for every NDG node")
-        metric_state = self.metrics_projection(metrics_x)
+            raise ValueError("The NDG view must be available for every NDG node")
+        if not torch.all(view_mask[:, 1]):
+            raise ValueError("The dataset metrics view must be available for every NDG node")
+        node_state = self.node_projection(ndg_node_x)
         # AST and CFG enter only after independent NDG message passing.
-        h = metric_state
-        view_weights = metrics_x.new_zeros((num_nodes, 3))
+        h = node_state
+        view_weights = metrics_x.new_zeros((num_nodes, self.late_fusion.num_views))
         layer_outputs = [h]
         edge_attr = self.edge_type_embedding(edge_type.long())
         attention: dict[str, Tensor] = {
@@ -270,10 +274,12 @@ class NDGMultiViewRelationalGATEncoder(nn.Module):
         else:
             structural_gate = metrics_x.new_zeros((num_nodes, 1))
         attention["ndg_structural_gate"] = structural_gate.detach()
-        fused, view_weights = self.late_fusion(ndg_embeddings, ast_x, cfg_x, view_mask)
+        fused, view_weights, view_embeddings = self.late_fusion(
+            ndg_embeddings, ast_x, cfg_x, view_mask, metrics_x=metrics_x)
         embeddings = self.late_output_projection(fused)
         attention["view_weights"] = view_weights.detach()
         attention["ndg_embeddings"] = ndg_embeddings.detach()
+        attention["view_embeddings"] = view_embeddings.detach()
         if return_attention:
             return embeddings, attention
         return embeddings

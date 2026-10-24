@@ -108,6 +108,6 @@ remain in experiment manifests for traceability.
 ### Experiment commands
 
 Use the [within-project evaluation guide](../training/evaluate_ndg_within_project.md)
-for the baseline and optional structural-feature runs. Keep extraction artifacts,
+for the four-view and optional structural-feature runs. Keep extraction artifacts,
 file splits and seeds matched. Extraction validity does not establish predictive
 improvement.

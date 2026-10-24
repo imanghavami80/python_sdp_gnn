@@ -36,12 +36,16 @@ def test_split_grouping_reproducibility_and_rare_classes():
 def test_scaling_ignores_heldout_metrics_and_labels():
     x = torch.tensor([[1., float('nan')], [3., float('nan')], [100., 8.]])
     g = ProjectGraph('p', ['a','b','c'], ['a','b','c'], x, torch.zeros(3,2), torch.zeros(3,2),
-                     torch.ones(3,3,dtype=torch.bool), torch.tensor([0.,1.,float('nan')]),
-                     torch.empty(2,0,dtype=torch.long), torch.empty(0,dtype=torch.long))
+                     torch.ones(3,4,dtype=torch.bool), torch.tensor([0.,1.,float('nan')]),
+                     torch.empty(2,0,dtype=torch.long), torch.empty(0,dtype=torch.long),
+                     ndg_node_x=torch.tensor([[1.], [3.], [100.]]))
     normalized, params = scale_from_training(g, np.array([0,1]))
     assert params['metric_mean'] == [2.,0.]
+    assert params['ndg_node_mean'] == [2.]
+    assert normalized.ndg_node_x[2, 0] == 98
     assert normalized.metrics_x[:,1].eq(0).all()
-    other = replace(g, metrics_x=torch.tensor([[1.,float('nan')],[3.,float('nan')],[-999.,100.]]))
+    other = replace(g, metrics_x=torch.tensor([[1.,float('nan')],[3.,float('nan')],[-999.,100.]]),
+                    ndg_node_x=torch.tensor([[1.], [3.], [-999.]]))
     _, other_params = scale_from_training(other, np.array([0,1]))
     assert params == other_params
 
@@ -58,8 +62,9 @@ def test_end_to_end_masking_and_checkpoint(tmp_path, monkeypatch, structural):
     split = split_files(names,names,base.y,42)
     index = pd.DataFrame(dict(dataset_name='p',name=names,label=base.y))
     lookup = {('p',name):rng.normal(size=8).astype('float32') for name in names}
-    config = NDGEncoderConfig(metrics_dim=4,ast_dim=8,cfg_dim=8,num_edge_types=1,hidden_dim=8,output_dim=8,heads=2,dropout=0.,ndg_structural_dim=6 if structural else 0)
-    args = runner.parse_args(['--ndg-epochs','3','--patience','2','--embedding-dim','8','--hidden-dim','8'])
+    config = NDGEncoderConfig(metrics_dim=4,ast_dim=8,cfg_dim=8,num_edge_types=2,hidden_dim=8,output_dim=8,heads=2,dropout=0.,ndg_structural_dim=6 if structural else 0,ndg_node_dim=7)
+    args = runner.parse_args(['--ndg-epochs','4','--patience','2','--embedding-dim','8','--hidden-dim','8'])
+    args.ndg_node_feature_names = [f'feature_{i}' for i in range(7)]
     calls=[]
 
     def upstream(view, data, parts, *unused):
@@ -85,6 +90,21 @@ def test_end_to_end_masking_and_checkpoint(tmp_path, monkeypatch, structural):
     assert set(pred.name) == set(np.array(names)[split['test']])
     assert row['ndg_epochs_run'] == len(pd.read_csv(tmp_path/'a/ndg_selection_history.csv'))
     assert row['elapsed_seconds'] >= row['ndg_seconds'] > 0
+    assert row['view_count'] == 4
+    assert 'majority_class_f1' in row and 'baseline_f1' not in row
+    assert 'majority_class_prediction' in pred and 'baseline_prediction' not in pred
+    assert saved['view_count'] == row['view_count']
+    assert saved['ndg_node_input'] == 'dependencies'
+    assert saved['model_inputs']['ndg_node_x'].shape == (n, 7)
+    with np.load(tmp_path/'a/file_view_embeddings.npz') as views:
+        assert set(views.files) == {'node_names', 'view_mask', 'ndg', 'metrics', 'ast', 'cfg', 'fusion_weights'}
+        assert views['view_mask'].shape == (n, 4)
+        assert all(views[name].shape == (n, 8) for name in ['ndg', 'metrics', 'ast', 'cfg'])
+        assert np.allclose(views['fusion_weights'].sum(axis=1), 1)
+
+def test_retired_clustering_flag_is_rejected():
+    with pytest.raises(SystemExit):
+        runner.parse_args(['--embedding-cluster-loss'])
 
 
 def test_preflight_reports_rare_projects_without_training():
@@ -112,3 +132,15 @@ def test_input_fingerprints_detect_tensor_changes(tmp_path):
     after = runner.audit.fingerprint_inputs([index], ['p'], lambda p: p.resolve())
     assert before[str(index)] == after[str(index)]
     assert before[str(tensor)] != after[str(tensor)]
+
+
+def test_macro_scores_weight_projects_equally():
+    metrics = pd.DataFrame({
+        'project': ['small', 'large'], 'test_nodes': [6, 600],
+        **{f'model_{metric}': [0.2, 0.8] for metric in (
+            'accuracy', 'balanced_accuracy', 'precision', 'recall', 'f1',
+            'mcc', 'g_mean', 'roc_auc', 'pr_auc', 'brier_score')},
+    })
+    summary = runner.common.aggregate_fold_metrics(metrics, 'model')
+    assert summary['f1']['mean'] == pytest.approx(0.5)
+    assert summary['f1']['valid_projects'] == 2

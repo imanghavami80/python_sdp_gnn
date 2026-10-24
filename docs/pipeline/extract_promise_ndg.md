@@ -21,9 +21,11 @@ raw NDG, but all three graph stages must be available before final evaluation.
 Every mapped row in the preprocessed CSV becomes one node. Stored metadata
 includes project name, qualified class name, source path, and binary label.
 
-The initial node feature tensor contains only the 20 `log1p` software metrics.
-It excludes identifiers, paths, match strategy, dataset name, and defect label.
-Fold-specific AST and CFG embeddings are attached later by the final evaluator.
+The extracted `x` tensor contains only the 20 `log1p` software metrics. It
+excludes identifiers, paths, match strategy, dataset name, and defect label.
+The four-view evaluator uses these values as a separate metrics view. It
+derives NDG node inputs from the saved typed edges, then attaches AST and CFG
+embeddings later. See [the model flow](../features/four_view_dependency_inputs.md).
 
 ## Dependency Relations
 

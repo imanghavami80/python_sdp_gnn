@@ -2,7 +2,9 @@
 projects_old/
 projects_new/
 proposal/
+outputs_old/
 outputs/
+MY_FOLDER/
 
 # macOS
 .DS_Store

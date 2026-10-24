@@ -1,54 +1,20 @@
-# 11 — NDG Encoder
+# NDG encoder and fusion
 
+The NDG encoder starts each file node with a 19-value, label-free dependency
+signature. Relation-aware graph attention passes information along directed,
+typed edges and produces one NDG embedding per file. Dataset metrics do not
+enter these graph updates.
 
+AST, CFG, NDG, and metrics embeddings are projected to a common width. A
+masked softmax gate learns one weight per available view and file. The four
+weighted vectors keep separate positions in the fusion layer, followed by a
+small projection and binary classifier. Missing AST or CFG embeddings receive
+zero weight. The gate weights describe model behavior; they are not causal
+feature importance.
 
-**Implementation:** `src/thesis_project/models/ndg_encoder.py`
+Optional handcrafted NDG structural descriptors use a gated residual addition
+to the NDG embedding. The default four-view experiment leaves them disabled.
 
-## Contract
-
-The encoder always performs late fusion. It returns one contextual embedding
-per NDG file node; the classifier produces one defect logit per file.
-
-Inputs are `metrics_x`, `ndg_structural_x`, independent
-`ast_x` and `cfg_x` embeddings, `view_mask`, `edge_index`, and
-`edge_type`. Disabled feature branches use zero-width tensors. The metrics
-view is required; unavailable AST and CFG views are masked.
-
-Metrics are projected into the NDG hidden space before message passing.
-
-## Relational NDG encoding
-
-Seven extracted dependency types receive separately typed inverse edges for
-training. Relation embeddings enter residual GATv2 layers. Layer outputs are
-concatenated and projected to a file embedding. AST and CFG values cannot
-affect this independently computed NDG embedding.
-
-## Optional structural augmentation
-
-When `ndg_structural_dim > 0`, a separate MLP projects training-standardized
-topology descriptors. A sigmoid gate controls their residual addition after
-message passing.
-
-## Fixed late fusion
-
-The learned NDG embedding (optionally enriched with structural features) is
-fused with AST and CFG embeddings through independent projections, masked
-softmax view weights, and a final projection. There is no early-fusion module,
-configuration field, or execution path.
-
-`NDGNodeClassifier` applies dropout and a linear binary head to each file
-embedding. No project-level pooling is used.
-
-## Diagnostics
-
-Attention output includes `ndg_embeddings`, `view_weights`,
-`edge_attention`, and `ndg_structural_gate`.
-Disabled gates return zeros internally; prediction CSVs use missing values for
-gates that do not exist in the scenario. Gate values are not causal feature
-importance.
-
-The architecture cleanup changes parameter initialization and checkpoint
-structure. Historical checkpoints are not compatible with the new configuration;
-rerun matched scenarios with the current code.
-
-See [07 — NDG structural features](../features/ndg_structural_features.md).
+See [the model flow](../features/four_view_dependency_inputs.md) for the
+diagram and [the evaluation guide](../training/evaluate_ndg_within_project.md)
+for training and saved outputs.
